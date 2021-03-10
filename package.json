@@ -2,17 +2,18 @@
   "name": "ethaffairs",
   "version": "1.0.0",
   "description": "ETH Affairs",
-  "main": "build-contracts.js",
+  "main": "util/build-contracts.js",
   "scripts": {
     "postinstall": "cross-var solc-vm install $npm_package_config_solidityVersion",
     "build": "node util/build-contracts.js",
-    "test": "mocha"
+    "abi": "node util/abi-extractor.js",
+    "test": "mocha",
+    "server": "node util/server.js"
   },
   "config": {
     "solidityVersion": "0.7.6"
   },
   "mocha": {
-    "exit": true,
     "timeout": false
   },
   "author": "",
@@ -20,12 +21,13 @@
   "dependencies": {
     "cross-var": "^1.1.0",
     "dotenv": "^8.2.0",
-    "ethers": "^5.0.25",
-    "ganache-cli": "^6.12.1",
+    "ethers": "^5.0.26",
+    "ganache-core": "^2.13.2",
+    "glob": "^7.1.6",
     "memdown": "^5.1.0",
     "mocha": "^8.2.1",
     "solc-vm": "git+https://github.com/vasapower/solc-vm.git",
     "truffle-flattener-wrapper": "git+https://github.com/b-u-i-d-l/truffle-flattener-wrapper.git",
-    "web3": "^1.3.1"
+    "web3": "^1.3.3"
   }
 }

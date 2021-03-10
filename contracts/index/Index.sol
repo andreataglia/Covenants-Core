@@ -6,34 +6,58 @@ pragma abicoder v2;
 import "./util/IEthItemOrchestrator.sol";
 import "./util/INativeV1.sol";
 import "./util/ERC1155Receiver.sol";
+import "./IIndex.sol";
+import "./util/DFOHub.sol";
 
-contract Index is ERC1155Receiver {
+contract Index is IIndex, ERC1155Receiver {
+
+    address public override _doubleProxy;
 
     mapping(address => bool) _temporaryIndex;
 
     event NewIndex(uint256 indexed id, address indexed interoperableInterfaceAddress, address indexed token, uint256 amount);
 
-    address public collection;
+    address public override collection;
 
     mapping(uint256 => address[]) public tokens;
     mapping(uint256 => uint256[]) public amounts;
 
-    constructor(address ethItemOrchestrator, string memory name, string memory symbol, string memory uri) {
+    constructor(address doubleProxy, address ethItemOrchestrator, string memory name, string memory symbol, string memory uri) {
+        _doubleProxy = doubleProxy;
         (collection,) = IEthItemOrchestrator(ethItemOrchestrator).createNative(abi.encodeWithSignature("init(string,string,bool,string,address,bytes)", name, symbol, true, uri, address(this), ""), "");
     }
 
-    function info(uint256 objectId) public view returns(address[] memory, uint256[] memory) {
-        return (tokens[objectId], amounts[objectId]);
+    modifier onlyDFO() {
+        require(IMVDFunctionalitiesManager(IMVDProxy(IDoubleProxy(_doubleProxy).proxy()).getMVDFunctionalitiesManagerAddress()).isAuthorizedFunctionality(msg.sender), "Unauthorized");
+        _;
     }
 
-    function mint(string memory name, string memory symbol, string memory uri, address[] memory _tokens, uint256[] memory _amounts, uint256 toMint, address receiver) public payable returns(uint256 objectId, address interoperableInterfaceAddress) {
+    function setDoubleProxy(address newDoubleProxy) public override onlyDFO {
+        _doubleProxy = newDoubleProxy;
+    }
+
+    function setCollectionUri(string memory uri) public override onlyDFO {
+        INativeV1(collection).setUri(uri);
+    }
+
+    function info(uint256 objectId, uint256 value) public override view returns(address[] memory _tokens, uint256[] memory _amounts) {
+        uint256 amount = value == 0 ? 1e18 : value;
+        _tokens = tokens[objectId];
+        _amounts = new uint256[](_tokens.length);
+        for(uint256 i = 0; i < _amounts.length; i++) {
+            _amounts[i] = (amounts[objectId][i] * amount) / 1e18;
+        }
+    }
+
+    function mint(string memory name, string memory symbol, string memory uri, address[] memory _tokens, uint256[] memory _amounts, uint256 value, address receiver) public override payable returns(uint256 objectId, address interoperableInterfaceAddress) {
         require(_tokens.length > 0 && _tokens.length == _amounts.length, "invalid length");
         for(uint256 i = 0; i < _tokens.length; i++) {
             require(!_temporaryIndex[_tokens[i]], "already done");
             require(_amounts[i] > 0, "amount");
             _temporaryIndex[_tokens[i]] = true;
-            uint256 tokenValue = toMint == 0 ? 0 : toMint * _amounts[i];
-            if(tokenValue > 0) {
+            if(value > 0) {
+                uint256 tokenValue = (_amounts[i] * value) / 1e18;
+                require(tokenValue > 0, "Insufficient balance");
                 if(_tokens[i] == address(0)) {
                     require(msg.value == tokenValue, "insufficient eth");
                 } else {
@@ -41,11 +65,12 @@ contract Index is ERC1155Receiver {
                 }
             }
         }
+        require(_temporaryIndex[address(0)] || msg.value == 0, "eth not involved");
         INativeV1 theCollection = INativeV1(collection);
-        (objectId, interoperableInterfaceAddress) = theCollection.mint((toMint == 0 ? 1 : toMint) * 1e18, name, symbol, uri, true);
+        (objectId, interoperableInterfaceAddress) = theCollection.mint(value == 0 ? 1e18 : value, name, symbol, uri, true);
         tokens[objectId] = _tokens;
         amounts[objectId] = _amounts;
-        if(toMint == 0) {
+        if(value == 0) {
             theCollection.burn(objectId, theCollection.balanceOf(address(this), objectId));
         } else {
             _safeTransfer(interoperableInterfaceAddress, receiver == address(0) ? msg.sender : receiver, theCollection.toInteroperableInterfaceAmount(objectId, theCollection.balanceOf(address(this), objectId)));
@@ -56,18 +81,22 @@ contract Index is ERC1155Receiver {
         }
     }
 
-    function mint(uint256 objectId, uint256 toMint, address receiver) public payable {
-        require(toMint > 0, "toMint");
+    function mint(uint256 objectId, uint256 value, address receiver) public override payable {
+        require(value > 0, "value");
+        bool ethInvolved = false;
         for(uint256 i = 0; i < tokens[objectId].length; i++) {
-            uint256 tokenValue = toMint * amounts[objectId][i];
+            uint256 tokenValue = (amounts[objectId][i] * value) / 1e18;
+            require(tokenValue > 0, "Insufficient balance");
             if(tokens[objectId][i] == address(0)) {
+                ethInvolved = true;
                  require(msg.value == tokenValue, "insufficient eth");
             } else {
                 _safeTransferFrom(tokens[objectId][i], msg.sender, address(this), tokenValue);
             }
         }
+        require(ethInvolved || msg.value == 0, "eth not involved");
         INativeV1 theCollection = INativeV1(collection);
-        theCollection.mint(objectId, toMint * 1e18);
+        theCollection.mint(objectId, value);
         _safeTransfer(address(theCollection.asInteroperable(objectId)), receiver == address(0) ? msg.sender : receiver, theCollection.toInteroperableInterfaceAmount(objectId, theCollection.balanceOf(address(this), objectId)));
     }
 
@@ -118,7 +147,8 @@ contract Index is ERC1155Receiver {
             for(uint256 i = 0; i < tokens[objectId].length; i++) {
                 uint256 tokenValue = (amounts[objectId][i] * value) / 1e18;
                 if(tokens[objectId][i] == address(0)) {
-                    payable(receiver).transfer(tokenValue);
+                    (bool result,) = receiver.call{value:tokenValue}("");
+                    require(result, "ETH transfer failed");
                 } else {
                     _safeTransfer(tokens[objectId][i], receiver, tokenValue);
                 }

@@ -8,8 +8,9 @@ import "./util/INativeV1.sol";
 import "./util/IERC20.sol";
 import "../amm-aggregator/common/IAMM.sol";
 import "./AllowedAMM.sol";
+import "./IWUSDExtension.sol";
 
-contract WUSDExtension {
+contract WUSDExtension is IWUSDExtension {
 
     uint256 private constant DECIMALS = 18;
 
@@ -20,10 +21,10 @@ contract WUSDExtension {
     uint256 private _mainItemObjectId;
     address private _mainItemInteroperableAddress;
 
-    constructor(address orchestrator, string memory name, string memory symbol, string memory collectionUri, string memory mainItemName, string memory mainItemSymbol, string memory mainItemUri) {
+    constructor(address orchestrator) {
         _controller = msg.sender;
-        (_collection,) = IEthItemOrchestrator(orchestrator).createNative(abi.encodeWithSignature("init(string,string,bool,string,address,bytes)", name, symbol, true, collectionUri, address(this), ""), "");
-        (_mainItemObjectId, _mainItemInteroperableAddress) = _mintEmpty(mainItemName, mainItemSymbol, mainItemUri, true);
+        (_collection,) = IEthItemOrchestrator(orchestrator).createNative(abi.encodeWithSignature("init(string,string,bool,string,address,bytes)", "Covenants Wrapped USD", "WUSD", true, "ipfs://ipfs/QmbFb9QdwSV1i8F1FhvBoL7XuCU7D1wRTLRRi23Zvu8Z9J", address(this), ""), "");
+        (_mainItemObjectId, _mainItemInteroperableAddress) = _mintEmpty("Wrapped USD", "WUSD", "ipfs://ipfs/QmTj9k7vq8DqLFuS3TrGGNDaacHL2cTgLjJ6Tu8ZbKwTHm", true);
     }
 
     function collection() public view returns (address) {
@@ -34,17 +35,13 @@ contract WUSDExtension {
         return (_collection, _mainItemObjectId, _mainItemInteroperableAddress);
     }
 
-    function controller() public view returns (address) {
+    function controller() public override view returns (address) {
         return _controller;
     }
 
     modifier controllerOnly() {
         require(msg.sender == _controller, "Unauthorized action");
         _;
-    }
-
-    function setController(address newController) public controllerOnly {
-        _controller = newController;
     }
 
     function mintEmpty(string memory tokenName, string memory tokenSymbol, string memory objectUri, bool editable) public controllerOnly returns(uint256 objectId, address interoperableInterfaceAddress) {

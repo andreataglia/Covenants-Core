@@ -9,7 +9,7 @@ contract MooniswapAMMV1 is IMooniswapAMMV1, AMM {
 
     address public override immutable factory;
 
-    constructor(address factoryAddress) AMM("MooniswapAMM", 1, address(0), 2, true) {
+    constructor(address factoryAddress) AMM("Mooniswap", 1, address(0), 2, true) {
         factory = factoryAddress;
     }
 
@@ -47,31 +47,41 @@ contract MooniswapAMMV1 is IMooniswapAMMV1, AMM {
         }
     }
 
+    function getSwapOutput(address tokenAddress, uint256 tokenAmount, address[] calldata liquidityPoolAddresses, address[] calldata path) view public virtual override returns(uint256[] memory realAmounts) {
+        realAmounts = new uint256[](path.length + 1);
+        realAmounts[0] = tokenAmount;
+        for(uint256 i = 0 ; i < path.length; i++) {
+            realAmounts[i + 1] = Mooniswap(liquidityPoolAddresses[i]).getReturn(i == 0 ? tokenAddress : path[i - 1], path[i], realAmounts[i]);
+        }
+    }
+
     function _getLiquidityPoolCreator(address[] memory, uint256[] memory, bool) internal virtual view override returns(address) {
         return address(0);
     }
 
     function _createLiquidityPoolAndAddLiquidity(address[] memory tokenAddresses, uint256[] memory amounts, bool, address, address receiver) internal virtual override returns(uint256 liquidityPoolAmount, uint256[] memory tokensAmounts, address liquidityPoolAddress, address[] memory orderedTokens) {
 
-        tokensAmounts = new uint256[](2);
-
         Mooniswap mooniswap = IMooniFactory(factory).deploy(tokenAddresses[0], tokenAddresses[1]);
         liquidityPoolAddress = address(mooniswap);
         orderedTokens = mooniswap.getTokens();
 
-        for(uint256 i = 0; i < tokenAddresses.length; i++) {
-            if(tokenAddresses[i] != _ethereumAddress) {
-                _safeApprove(tokenAddresses[i], liquidityPoolAddress, amounts[i]);
+        tokensAmounts = new uint256[](orderedTokens.length);
+        tokensAmounts[0] = amounts[orderedTokens[0] == tokenAddresses[0] ? 0 : 1];
+        tokensAmounts[1] = amounts[orderedTokens[1] == tokenAddresses[1] ? 1 : 0];
+
+        for(uint256 i = 0; i < orderedTokens.length; i++) {
+            if(orderedTokens[i] != _ethereumAddress) {
+                _safeApprove(orderedTokens[i], liquidityPoolAddress, tokensAmounts[i]);
             }
         }
 
-        if(tokenAddresses[0] != _ethereumAddress && tokenAddresses[1] != _ethereumAddress) {
-            mooniswap.deposit(amounts, new uint256[](amounts.length));
+        if(orderedTokens[0] != _ethereumAddress && orderedTokens[1] != _ethereumAddress) {
+            mooniswap.deposit(tokensAmounts, tokensAmounts);
         } else {
-            mooniswap.deposit{value : tokenAddresses[0] == _ethereumAddress ? amounts[0] : amounts[1]}(amounts, new uint256[](amounts.length));
+            mooniswap.deposit{value : orderedTokens[0] == _ethereumAddress ? tokensAmounts[0] : tokensAmounts[1]}(tokensAmounts, tokensAmounts);
         }
 
-        _safeTransfer(liquidityPoolAddress, receiver, liquidityPoolAmount = IERC20(liquidityPoolAddress).totalSupply());
+        _safeTransfer(liquidityPoolAddress, receiver, liquidityPoolAmount = IERC20(liquidityPoolAddress).balanceOf(address(this)));
     }
 
     function _addLiquidity(ProcessedLiquidityPoolData memory data) internal override virtual returns(uint256 liquidityPoolAmount, uint256[] memory tokensAmounts) {
@@ -92,7 +102,7 @@ contract MooniswapAMMV1 is IMooniswapAMMV1, AMM {
         } else {
             mooniswap.deposit{value : data.liquidityPoolTokens[0] == _ethereumAddress ? data.tokensAmounts[0] : data.tokensAmounts[1]}(data.tokensAmounts, new uint256[](data.tokensAmounts.length));
         }
-        _safeTransfer(data.liquidityPoolAddress, data.receiver, liquidityPoolAmount);
+        _safeTransfer(data.liquidityPoolAddress, data.receiver, liquidityPoolAmount = IERC20(data.liquidityPoolAddress).balanceOf(address(this)));
     }
 
     function _removeLiquidity(ProcessedLiquidityPoolData memory data) internal override virtual returns(uint256 liquidityPoolAmount, uint256[] memory tokensAmounts) {
@@ -104,7 +114,8 @@ contract MooniswapAMMV1 is IMooniswapAMMV1, AMM {
             if(data.liquidityPoolTokens[i] != _ethereumAddress) {
                 _safeTransfer(data.liquidityPoolTokens[i], data.receiver, data.tokensAmounts[i] = IERC20(data.liquidityPoolTokens[i]).balanceOf(address(this)));
             } else {
-                payable(data.receiver).transfer(tokensAmounts[i] = address(this).balance);
+                (bool result,) = data.receiver.call{value:tokensAmounts[i] = address(this).balance}("");
+                require(result, "ETH transfer failed");
             }
         }
     }
@@ -112,20 +123,21 @@ contract MooniswapAMMV1 is IMooniswapAMMV1, AMM {
     function _swapLiquidity(ProcessedSwapData memory data) internal override virtual returns(uint256 outputAmount) {
         outputAmount = data.amount;
         for(uint256 i = 0; i < data.liquidityPoolAddresses.length; i++) {
-            address inputToken = i == 0 ? data.inputToken : data.paths[i - 1];
+            address inputToken = i == 0 ? data.inputToken : data.path[i - 1];
             if(inputToken != _ethereumAddress) {
                 _safeApprove(inputToken, data.liquidityPoolAddresses[i], outputAmount);
             }
             if(inputToken == _ethereumAddress) {
-                outputAmount = Mooniswap(data.liquidityPoolAddresses[i]).swap{value : outputAmount}(inputToken, data.paths[i], outputAmount, 1, address(0));
+                outputAmount = Mooniswap(data.liquidityPoolAddresses[i]).swap{value : outputAmount}(inputToken, data.path[i], outputAmount, 0, address(0));
             } else {
-                outputAmount = Mooniswap(data.liquidityPoolAddresses[i]).swap(inputToken, data.paths[i], outputAmount, 1, address(0));
+                outputAmount = Mooniswap(data.liquidityPoolAddresses[i]).swap(inputToken, data.path[i], outputAmount, 0, address(0));
             }
         }
-        if(data.paths[data.paths.length - 1] == _ethereumAddress) {
-            payable(data.receiver).transfer(outputAmount);
+        if(data.path[data.path.length - 1] == _ethereumAddress) {
+            (bool result,) = data.receiver.call{value:outputAmount}("");
+            require(result, "ETH transfer failed");
         } else {
-            _safeTransfer(data.paths[data.paths.length - 1], data.receiver, outputAmount);
+            _safeTransfer(data.path[data.path.length - 1], data.receiver, outputAmount);
         }
     }
 }

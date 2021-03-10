@@ -6,6 +6,8 @@ import "./AMMData.sol";
 
 interface IAMM {
 
+    event NewLiquidityPoolAddress(address indexed);
+
     function info() external view returns(string memory name, uint256 version);
 
     function data() external view returns(address ethereumAddress, uint256 maxTokensPerLiquidityPool, bool hasUniqueLiquidityPools);
@@ -29,6 +31,8 @@ interface IAMM {
 
     function removeLiquidity(LiquidityPoolData calldata data) external returns(uint256, uint256[] memory, address[] memory);
     function removeLiquidityBatch(LiquidityPoolData[] calldata data) external returns(uint256[] memory, uint256[][] memory, address[][] memory);
+
+    function getSwapOutput(address tokenAddress, uint256 tokenAmount, address[] calldata, address[] calldata path) view external returns(uint256[] memory);
 
     function swapLiquidity(SwapData calldata data) external payable returns(uint256);
     function swapLiquidityBatch(SwapData[] calldata data) external payable returns(uint256[] memory);

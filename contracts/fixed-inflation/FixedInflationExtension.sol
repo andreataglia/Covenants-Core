@@ -14,6 +14,8 @@ contract FixedInflationExtension is IFixedInflationExtension {
 
     address private _fixedInflationContract;
 
+    bool public override active;
+
     modifier fixedInflationOnly() {
         require(_fixedInflationContract == msg.sender, "Unauthorized");
         _;
@@ -29,7 +31,7 @@ contract FixedInflationExtension is IFixedInflationExtension {
 
     function init(address host) override public {
         require(_host == address(0), "Already init");
-        _host = host;
+        require((_host = host) != address(0), "blank host");
         _fixedInflationContract = msg.sender;
     }
 
@@ -41,11 +43,16 @@ contract FixedInflationExtension is IFixedInflationExtension {
         return(_fixedInflationContract, _host);
     }
 
+    function setActive(bool _active) public override virtual hostOnly {
+        active = _active;
+    }
+
     function receiveTokens(address[] memory tokenAddresses, uint256[] memory transferAmounts, uint256[] memory amountsToMint) public override fixedInflationOnly {
         for(uint256 i = 0; i < tokenAddresses.length; i++) {
             if(transferAmounts[i] > 0) {
                 if(tokenAddresses[i] == address(0)) {
-                    payable(msg.sender).transfer(transferAmounts[i]);
+                    (bool result,) = msg.sender.call{value:transferAmounts[i]}("");
+                    require(result, "ETH transfer failed");
                     continue;
                 }
                 _safeTransfer(tokenAddresses[i], msg.sender, transferAmounts[i]);
@@ -56,8 +63,16 @@ contract FixedInflationExtension is IFixedInflationExtension {
         }
     }
 
-    function setEntries(FixedInflationEntryConfiguration[] memory newEntries, FixedInflationOperation[][] memory operationSets) public override hostOnly {
-        IFixedInflation(_fixedInflationContract).setEntries(newEntries, operationSets);
+    function setEntry(FixedInflationEntry memory newEntry, FixedInflationOperation[] memory newOperations) public override hostOnly {
+        IFixedInflation(_fixedInflationContract).setEntry(newEntry, newOperations);
+    }
+
+    function flushBack(address[] memory tokenAddresses) public override hostOnly {
+        IFixedInflation(_fixedInflationContract).flushBack(tokenAddresses);
+    }
+
+    function deactivationByFailure() public override fixedInflationOnly {
+        active = false;
     }
 
     /** INTERNAL METHODS */

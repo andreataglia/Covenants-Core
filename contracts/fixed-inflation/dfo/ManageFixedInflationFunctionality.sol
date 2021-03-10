@@ -1,3 +1,9 @@
+/* Discussion:
+ * //discord.gg/34we8bh
+ */
+/* Description:
+ * Fixed Inflation Management Functionality
+ */
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.7.6;
 pragma abicoder v2;
@@ -18,6 +24,7 @@ contract ProposalCode {
         IMVDProxy proxy = IMVDProxy(msg.sender);
         IStateHolder stateHolder = IStateHolder(proxy.getStateHolderAddress());
         stateHolder.setBool(_toStateHolderKey("fixedinflation.authorized", _toString({0})), true);
+        IFixedInflationExtension({0}).setActive(true);
     }
 
     function onStop(address) public {
@@ -34,7 +41,7 @@ contract ProposalCode {
                 token.mint(amountsToMint[i]);
                 proxy.flushToWallet(address(token), false, 0);
                 if(lastAmount > 0) {
-                    proxy.transfer(to, lastAmount, address(token));
+                    proxy.transfer(msg.sender, lastAmount, address(token));
                 }
             }
             proxy.transfer(to, transferAmounts[i] + amountsToMint[i], address(token));
@@ -96,4 +103,8 @@ interface IERC20 {
     function decimals() external view returns (uint8);
     function mint(uint256 amount) external;
     function burn(uint256 amount) external;
+}
+
+interface IFixedInflationExtension {
+    function setActive(bool _active) external;
 }

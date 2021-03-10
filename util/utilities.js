@@ -9,6 +9,8 @@ if (!String.prototype.format) {
 
 var voidEthereumAddress = "0x0000000000000000000000000000000000000000";
 
+var voidBytes32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
+
 global.formatMoneyDecPlaces = 4;
 
 function fromDecimals(n, d, noFormat) {
@@ -24,7 +26,7 @@ function fromDecimals(n, d, noFormat) {
         return noFormat === true ? result : formatMoney(result);
     }
     var number = (typeof n).toLowerCase() === 'string' ? parseInt(n) : n;
-    if (!number || this.isNaN(number)) {
+    if (!number || isNaN(number)) {
         return '0';
     }
     var nts = parseFloat(numberToString((number / (decimals < 2 ? 1 : Math.pow(10, decimals)))));
@@ -44,7 +46,7 @@ function toDecimals(n, d) {
         return web3.utils.toWei((typeof n).toLowerCase() === 'string' ? n : numberToString(n), symbol);
     }
     var number = (typeof n).toLowerCase() === 'string' ? parseInt(n) : n;
-    if (!number || this.isNaN(number)) {
+    if (!number || isNaN(number)) {
         return 0;
     }
     return numberToString(number * (decimals < 2 ? 1 : Math.pow(10, decimals)));
@@ -83,6 +85,10 @@ function numberToString(num, locale) {
     return numStr;
 }
 
+function normalizeValue(amount, decimals) {
+    return web3.utils.toBN(amount).mul(web3.utils.toBN(10 ** (18 - decimals))).toString();
+}
+
 function formatMoney(value, decPlaces, thouSeparator, decSeparator) {
     value = (typeof value).toLowerCase() !== 'number' ? parseFloat(value) : value;
     var n = value,
@@ -100,6 +106,14 @@ function formatNumber(value) {
     return parseFloat(numberToString(value).split(',').join(''));
 }
 
+function getRandomArrayIndex(array) {
+    return Math.floor(Math.random() * array.length);
+}
+
+function getRandomArrayElement(array) {
+    return array[getRandomArrayIndex(array)];
+}
+
 function eliminateFloatingFinalZeroes(value, decSeparator) {
     decSeparator = decSeparator || '.';
     if (value.indexOf(decSeparator) === -1) {
@@ -110,6 +124,12 @@ function eliminateFloatingFinalZeroes(value, decSeparator) {
         split[1] = split[1].substring(0, split[1].length - 1);
     }
     return split[1].length === 0 ? split[0] : split.join(decSeparator);
+}
+
+function sleep(millis) {
+    return new Promise(function(ok) {
+        setTimeout(ok, millis || 300);
+    });
 }
 
 function toEthereumSymbol(decimals) {
@@ -154,11 +174,16 @@ function toEthereumSymbol(decimals) {
 
 module.exports = {
     voidEthereumAddress,
+    voidBytes32,
     fromDecimals,
     toDecimals,
     numberToString,
     formatNumber,
     formatMoney,
     eliminateFloatingFinalZeroes,
-    toEthereumSymbol
+    toEthereumSymbol,
+    sleep,
+    normalizeValue,
+    getRandomArrayIndex,
+    getRandomArrayElement
 }

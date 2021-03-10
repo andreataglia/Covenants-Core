@@ -11,21 +11,28 @@ contract SushiSwapAMMV1 is ISushiSwapAMMV1, AMM {
 
     address private _wethAddress;
 
-    address private immutable _factoryAddress;
-
-    constructor(address sushiSwapV2RouterAddress) AMM("SushiSwapAMM", 1, _wethAddress = IUniswapV2Router(_sushiSwapV2RouterAddress = sushiSwapV2RouterAddress).WETH(), 2, true) {
-        _factoryAddress = IUniswapV2Router(sushiSwapV2RouterAddress).factory();
+    constructor(address sushiSwapV2RouterAddress) AMM("SushiSwap", 1, _wethAddress = IUniswapV2Router(_sushiSwapV2RouterAddress = sushiSwapV2RouterAddress).WETH(), 2, true) {
     }
 
-    function sushiSwapData() public virtual override view returns(address routerAddress, address factoryAddress, address wethAddress) {
+
+    function factory() private view returns (address) {
+        return IUniswapV2Router(_sushiSwapV2RouterAddress).factory();
+    }
+
+    function sushiSwapData() public virtual override view returns(address routerAddress, address wethAddress) {
         routerAddress = _sushiSwapV2RouterAddress;
-        factoryAddress = _factoryAddress;
         wethAddress = _wethAddress;
     }
 
     function byLiquidityPool(address liquidityPoolAddress) public override view returns(uint256 liquidityPoolAmount, uint256[] memory tokensAmounts, address[] memory tokenAddresses) {
 
         IUniswapV2Pair pair = IUniswapV2Pair(liquidityPoolAddress);
+
+        address token0 = pair.token0();
+        address token1 = pair.token1();
+        if(IUniswapV2Factory(factory()).getPair(token0, token1) != liquidityPoolAddress) {
+            return(0, new uint256[](0), new address[](0));
+        }
 
         liquidityPoolAmount = pair.totalSupply();
 
@@ -35,13 +42,13 @@ contract SushiSwapAMMV1 is ISushiSwapAMMV1, AMM {
         tokensAmounts[1] = amountB;
 
         tokenAddresses = new address[](2);
-        tokenAddresses[0] = pair.token0();
-        tokenAddresses[1] = pair.token1();
+        tokenAddresses[0] = token0;
+        tokenAddresses[1] = token1;
     }
 
     function byTokens(address[] memory tokenAddresses) public override view returns(uint256 liquidityPoolAmount, uint256[] memory tokensAmounts, address liquidityPoolAddress, address[] memory orderedTokens) {
 
-        IUniswapV2Pair pair = IUniswapV2Pair(liquidityPoolAddress = IUniswapV2Factory(_factoryAddress).getPair(tokenAddresses[0], tokenAddresses[1]));
+        IUniswapV2Pair pair = IUniswapV2Pair(liquidityPoolAddress = IUniswapV2Factory(factory()).getPair(tokenAddresses[0], tokenAddresses[1]));
 
         if(address(pair) == address(0)) {
             return (liquidityPoolAmount, tokensAmounts, liquidityPoolAddress, orderedTokens);
@@ -57,6 +64,15 @@ contract SushiSwapAMMV1 is ISushiSwapAMMV1, AMM {
         orderedTokens = new address[](2);
         orderedTokens[0] = pair.token0();
         orderedTokens[1] = pair.token1();
+    }
+
+    function getSwapOutput(address tokenAddress, uint256 tokenAmount, address[] calldata, address[] calldata path) view public virtual override returns(uint256[] memory) {
+        address[] memory realPath = new address[](path.length + 1);
+        realPath[0] = tokenAddress;
+        for(uint256 i = 0; i < path.length; i++) {
+            realPath[i + 1] = path[i];
+        }
+        return IUniswapV2Router(_sushiSwapV2RouterAddress).getAmountsOut(tokenAmount, realPath);
     }
 
     function _getLiquidityPoolOperator(address, address[] memory) internal override virtual view returns(address) {
@@ -94,7 +110,7 @@ contract SushiSwapAMMV1 is ISushiSwapAMMV1, AMM {
                 block.timestamp + 10000
             );
         }
-        IUniswapV2Pair pair = IUniswapV2Pair(liquidityPoolAddress = IUniswapV2Factory(_factoryAddress).getPair(tokenAddresses[0], tokenAddresses[1]));
+        IUniswapV2Pair pair = IUniswapV2Pair(liquidityPoolAddress = IUniswapV2Factory(factory()).getPair(tokenAddresses[0], tokenAddresses[1]));
         orderedTokens[0] = pair.token0();
         orderedTokens[1] = pair.token1();
     }
@@ -144,10 +160,10 @@ contract SushiSwapAMMV1 is ISushiSwapAMMV1, AMM {
     }
 
     function _swapLiquidity(ProcessedSwapData memory data) internal override virtual returns(uint256 outputAmount) {
-        address[] memory path = new address[](data.paths.length + 1);
+        address[] memory path = new address[](data.path.length + 1);
         path[0] = data.enterInETH ? _wethAddress : data.inputToken;
-        for(uint256 i = 0; i < data.paths.length; i++) {
-            path[i + 1] = data.paths[i];
+        for(uint256 i = 0; i < data.path.length; i++) {
+            path[i + 1] = data.path[i];
         }
         if(data.exitInETH) {
             path[path.length - 1] = _wethAddress;
