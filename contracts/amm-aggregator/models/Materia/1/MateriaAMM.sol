@@ -53,22 +53,23 @@ contract MateriaAMM is IMateriaAMM, AMM {
 
     function byTokens(address[] memory tokenAddresses) public override view returns(uint256 liquidityPoolAmount, uint256[] memory tokensAmounts, address liquidityPoolAddress, address[] memory orderedTokens) {
         require(tokenAddresses[0] == _bridgeTokenAddress || tokenAddresses[1] == _bridgeTokenAddress);
-        IMateriaPair pair = IMateriaPair(liquidityPoolAddress = IMateriaFactory(_factoryAddress).getPair(tokenAddresses[0], tokenAddresses[1]));
+        address pair = IMateriaFactory(_factoryAddress).getPair(tokenAddresses[0], tokenAddresses[1]);
 
-        if(address(pair) == address(0)) {
+        if(pair == address(0)) {
             return (liquidityPoolAmount, tokensAmounts, liquidityPoolAddress, orderedTokens);
         }
 
-        liquidityPoolAmount = pair.totalSupply();
+        liquidityPoolAmount = IMateriaPair(pair).totalSupply();
+        liquidityPoolAddress = pair;
 
         tokensAmounts = new uint256[](2);
-        (uint256 amountA, uint256 amountB,) = pair.getReserves();
+        (uint256 amountA, uint256 amountB,) = IMateriaPair(pair).getReserves();
         tokensAmounts[0] = amountA;
         tokensAmounts[1] = amountB;
 
         orderedTokens = new address[](2);
-        orderedTokens[0] = pair.token0();
-        orderedTokens[1] = pair.token1();
+        orderedTokens[0] = IMateriaPair(pair).token0();
+        orderedTokens[1] = IMateriaPair(pair).token1();
     }
 
     function _adjustAmount(address token, uint256 amount) private view returns (uint newAmount) {
@@ -123,16 +124,21 @@ contract MateriaAMM is IMateriaAMM, AMM {
         return _materiaOrchestratorAddress;
     }
     
-    function _addLiquidity(address token, uint tokenAmountDesired, uint bridgeAmountDesired, address to) private returns(uint bridgeAmount, uint tokenAmount, uint liquidityPoolAmount) {
-        address[] memory tokens = new address[](2);
-        (tokens[0], tokens[1]) = (token, _bridgeTokenAddress);
-        (,,address pair,) = byTokens(tokens);
+    function _approveInCase(address token, uint amount) private {
+        if (IERC20(token).allowance(address(this), _erc20WrapperAddress) < amount)
+            IERC20(token).approve(_erc20WrapperAddress, type(uint256).max);
+    }
+    
+    function _addLiquidity(address token, uint tokenAmountDesired, uint bridgeAmountDesired, address to) private returns(uint bridgeAmount, uint tokenAmount, uint liquidityPoolAmount, address pair) {
+        _approveInCase(token, tokenAmountDesired);
+        _approveInCase(_bridgeTokenAddress, bridgeAmountDesired);
+        
+        pair = IMateriaFactory(_factoryAddress).getPair(token, _bridgeTokenAddress); //wrong, not the correct pair, to fix
         
         liquidityPoolAmount = IERC20(pair).balanceOf(to);
-        bridgeAmount = IERC20(_bridgeTokenAddress).balanceOf(msg.sender);
-        tokenAmount = IERC20(token).balanceOf(msg.sender);
+        bridgeAmount = IERC20(_bridgeTokenAddress).balanceOf(address(this));
+        tokenAmount = IERC20(token).balanceOf(address(this));
 
-        
         IMateriaOrchestrator(_materiaOrchestratorAddress).addLiquidity(
             token,
             tokenAmountDesired,
@@ -144,43 +150,98 @@ contract MateriaAMM is IMateriaAMM, AMM {
         );
         
         liquidityPoolAmount = IERC20(pair).balanceOf(to) - liquidityPoolAmount;
-        bridgeAmount -= IERC20(_bridgeTokenAddress).balanceOf(msg.sender);
-        tokenAmount -= IERC20(token).balanceOf(msg.sender);
+        bridgeAmount -= IERC20(_bridgeTokenAddress).balanceOf(address(this));
+        tokenAmount -= IERC20(token).balanceOf(address(this));
+    }
+    
+    function _addLiquidityETH(uint ethAmountDesired, uint bridgeAmountDesired, address to) private returns(uint bridgeAmount, uint ethAmount, uint liquidityPoolAmount, address pair) {
+        _approveInCase(_iethAddress, ethAmountDesired);
+        _approveInCase(_bridgeTokenAddress, bridgeAmountDesired);
+        
+        pair = IMateriaFactory(_factoryAddress).getPair(_iethAddress, _bridgeTokenAddress);
+        
+        liquidityPoolAmount = IERC20(pair).balanceOf(to);
+        bridgeAmount = IERC20(_bridgeTokenAddress).balanceOf(address(this));
+        ethAmount = address(address(this)).balance;
+
+        IMateriaOrchestrator(_materiaOrchestratorAddress).addLiquidityETH{value: ethAmountDesired}(
+            bridgeAmountDesired,
+            0,
+            0,
+            to,
+            block.timestamp
+        );
+        
+        liquidityPoolAmount = IERC20(pair).balanceOf(to) - liquidityPoolAmount;
+        bridgeAmount -= IERC20(_bridgeTokenAddress).balanceOf(address(this));
+        ethAmount -= address(this).balance;
+    }
+    
+    function _addLiquidityItem(address itemAsInteroperable, uint itemAmountDesired, uint bridgeAmountDesired, address to) private returns(uint bridgeAmount, uint itemAmount, uint liquidityPoolAmount, address pair) {
+        _approveInCase(_bridgeTokenAddress, bridgeAmountDesired);
+        
+        pair = IMateriaFactory(_factoryAddress).getPair(itemAsInteroperable, _bridgeTokenAddress);
+        
+        liquidityPoolAmount = IERC20(pair).balanceOf(to);
+        bridgeAmount = IERC20(_bridgeTokenAddress).balanceOf(address(this));
+        itemAmount = IERC20(itemAsInteroperable).balanceOf(address(this));
+
+        IERC20WrapperV1(_erc20WrapperAddress).safeTransferFrom(
+            address(this),
+            to,
+            IEthItemInteroperableInterface(itemAsInteroperable).objectId(),
+            itemAmountDesired,
+            abi.encode(1, abi.encode(bridgeAmountDesired, 0, 0, to, block.timestamp))
+        );
+        
+        liquidityPoolAmount = IERC20(pair).balanceOf(to) - liquidityPoolAmount;
+        bridgeAmount -= IERC20(_bridgeTokenAddress).balanceOf(address(this));
+        itemAmount -= IERC20(itemAsInteroperable).balanceOf(address(this));
     }
     
     function _createLiquidityPoolAndAddLiquidity(address[] memory tokenAddresses, uint256[] memory amounts, bool involvingETH, address, address receiver) internal virtual override returns(uint256 liquidityPoolAmount, uint256[] memory tokensAmounts, address liquidityPoolAddress, address[] memory orderedTokens) {
-/*
+        require(!(tokenAddresses[0] == _bridgeTokenAddress && tokenAddresses[1] == _bridgeTokenAddress) && (tokenAddresses[0] == _bridgeTokenAddress || tokenAddresses[1] == _bridgeTokenAddress), 'Only one token must the bridge token');
+
         tokensAmounts = new uint256[](2);
         orderedTokens = new address[](2);
-        if(!involvingETH) {
-            (tokensAmounts[0], tokensAmounts[1], liquidityPoolAmount) = IUniswapV2Router(_uniswapV2RouterAddress).addLiquidity(
-                tokenAddresses[0],
-                tokenAddresses[1],
-                amounts[0],
+        
+        orderedTokens[0] = _bridgeTokenAddress; //orderedTokens[0] is the bridge token
+        orderedTokens[1] = orderedTokens[0] == _bridgeTokenAddress ? orderedTokens[1] : orderedTokens[0]; //orderedTokens[1] is the non bridge token
+        
+        if (orderedTokens[0] != _bridgeTokenAddress)
+            (amounts[0], amounts[1]) = (amounts[1], amounts[0]);
+        
+        if(involvingETH) {
+            (tokensAmounts[0], tokensAmounts[1], liquidityPoolAmount, liquidityPoolAddress) = _addLiquidityETH(
                 amounts[1],
-                1,
-                1,
-                receiver,
-                block.timestamp
+                amounts[0],
+                receiver
             );
         } else {
-            address token = tokenAddresses[0] != _wethAddress ? tokenAddresses[0] : tokenAddresses[1];
-            uint256 amountTokenDesired = tokenAddresses[0] != _wethAddress ? amounts[0] : amounts[1];
-            uint256 amountETHDesired = tokenAddresses[0] == _wethAddress ? amounts[0] : amounts[1];
-            (tokensAmounts[0], tokensAmounts[1], liquidityPoolAmount) = IUniswapV2Router(_uniswapV2RouterAddress).addLiquidityETH {value : amountETHDesired} (
-                token,
-                amountTokenDesired,
-                1,
-                1,
-                receiver,
-                block.timestamp
-            );
+            (bool isEthItem,) = _isEthItem(orderedTokens[1]);
+            if (isEthItem) {
+                (tokensAmounts[0], tokensAmounts[1], liquidityPoolAmount, liquidityPoolAddress) = _addLiquidityItem(
+                    orderedTokens[1],
+                    amounts[1],
+                    amounts[0],
+                    receiver
+                );
+            }
+            else {
+                (tokensAmounts[0], tokensAmounts[1], liquidityPoolAmount, liquidityPoolAddress) = _addLiquidity(
+                   orderedTokens[1],
+                   amounts[1],
+                   amounts[0],
+                   receiver
+                );
+            }
         }
-        IUniswapV2Pair pair = IUniswapV2Pair(liquidityPoolAddress = IUniswapV2Factory(factory()).getPair(tokenAddresses[0], tokenAddresses[1]));
-        orderedTokens[0] = pair.token0();
-        orderedTokens[1] = pair.token1();
-*/
+        
+        (orderedTokens[0], orderedTokens[1], tokensAmounts[0], tokensAmounts[1]) = orderedTokens[0] < orderedTokens[1] ?
+            (orderedTokens[0], orderedTokens[1], tokensAmounts[0], tokensAmounts[1]) : 
+            (orderedTokens[1], orderedTokens[0], tokensAmounts[1], tokensAmounts[0]);
     }
+    
     function _addLiquidity(ProcessedLiquidityPoolData memory processedLiquidityPoolData) internal override virtual returns(uint256 liquidityPoolAmount, uint256[] memory tokensAmounts) {
 /*
         tokensAmounts = new uint256[](2);

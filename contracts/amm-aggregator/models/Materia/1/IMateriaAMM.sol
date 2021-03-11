@@ -12,12 +12,13 @@ interface IMateriaAMM is IAMM {
 interface IERC20WrapperV1 {
     function asInteroperable(uint itemId) external view returns (address);
     function object(address erc20TokenAddress) external view returns (uint256 objectId);
+    function safeTransferFrom(address from, address to, uint256 id, uint256 amount, bytes calldata data) external;
 }
 
 interface IEthItemInteroperableInterface {
     function mainInterface() external view returns (address);
+    function objectId() external view returns (uint256);
 }
-
 
 interface IERC20Data {
     function decimals() external view returns (uint256);
@@ -32,6 +33,8 @@ interface IMateriaOrchestrator {
     function getAmountsOut(uint amountIn, address[] memory path) external view returns (uint[] memory amounts);
     function isEthItem(address token) external view returns (address collection, bool ethItem, uint itemId);
     function addLiquidity(address token, uint tokenAmountDesired, uint bridgeAmountDesired, uint tokenAmountMin, uint bridgeAmountMin, address to, uint deadline) external;
+    function addLiquidityETH(uint256 bridgeAmountDesired, uint256 ethAmountMin, uint256 bridgeAmountMin, address to, uint256 deadline) payable external;
+    
 }
 
 interface IMateriaPair {
