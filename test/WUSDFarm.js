@@ -48,6 +48,13 @@ var zeroBlock;
 var mainDFO;
 var dFOBasedFarmExtensionFactory;
 var wUSDFarmingExtension;
+var wUSDExtensionController;
+var usdCollection;
+var usdObjectId;
+var USDT;
+var USDC;
+var DAI;
+var wusdInteroperable;
 
 describe("WUSDFarm", () => {
 
@@ -74,6 +81,50 @@ describe("WUSDFarm", () => {
         secondaryToken !== utilities.voidEthereumAddress && await buyForETH(secondaryToken, ethToSpend, address);
 
     };
+
+    function fromTokenToStable(amount, decimals) {
+        if (utilities.formatNumber(decimals) === 18) {
+            return amount;
+        }
+        return utilities.toDecimals(amount, 18 - utilities.formatNumber(decimals));
+    }
+
+    function fromStableToToken(amount, decimals) {
+        if (utilities.formatNumber(decimals) === 18) {
+            return amount;
+        }
+        return utilities.fromDecimals(amount, 18 - utilities.formatNumber(decimals));
+    }
+
+    async function tokenData(token, method) {
+        try {
+            return await token.methods[method]().call();
+        } catch (e) {}
+        var name;
+        try {
+            var to = token.options ? token.options.address : token;
+            var raw = await web3.eth.call({
+                to,
+                data: web3.utils.sha3(`${method}()`).substring(0, 10)
+            });
+            name = web3.utils.toUtf8(raw);
+        } catch (e) {
+            name = "";
+        }
+        name = name.trim();
+        if (name) {
+            return name;
+        }
+        if (!token.options || !token.options.address) {
+            return "ETH";
+        }
+    }
+
+    async function calculatePercentage(totalAmount, percentage) {
+        var ONE_HUNDRED = await wUSDExtensionController.methods.ONE_HUNDRED().call();
+        var amount = web3.utils.toBN(totalAmount).mul(web3.utils.toBN(percentage).mul(web3.utils.toBN(1e18)).div(web3.utils.toBN(ONE_HUNDRED))).div(web3.utils.toBN(1e18));
+        return amount.toString();
+    }
 
     async function createStakingPosition(actor, setupIndex) {
         (mainToken !== utilities.voidEthereumAddress) && await mainToken.methods.approve(farmMainContract.options.address, await mainToken.methods.totalSupply().call()).send(actor.from);
@@ -259,9 +310,143 @@ describe("WUSDFarm", () => {
         }
     }
 
+    async function getUSD(ammPosition, liquidityPoolPosition, maxAmountPerToken, byLiquidityPool) {
+        var allowed = await wUSDExtensionController.methods.allowedAMMs().call();
+
+        var usdBalanceBefore = await usdCollection.methods.balanceOf(accounts[0], usdObjectId).call();
+
+        var amm = new web3.eth.Contract((await compile("amm-aggregator/common/IAMM")).abi, allowed[ammPosition][0]);
+
+        var liquidityPoolAddress = allowed[ammPosition][1][liquidityPoolPosition];
+        var maxuSDExpected = maxAmountPerToken * 2;
+        var value = utilities.toDecimals(maxuSDExpected, 18);
+        maxuSDExpected = web3.utils.toBN(value).add(web3.utils.toBN(usdBalanceBefore)).toString();
+
+        maxuSDExpected = utilities.fromDecimals(maxuSDExpected, 18);
+        usdBalanceBefore = parseFloat(utilities.fromDecimals(usdBalanceBefore, "18", true));
+
+        var liquidityPoolData = await amm.methods.byLiquidityPool(liquidityPoolAddress).call();
+
+        var liquidityPoolTokens = liquidityPoolData[2].map(it => new web3.eth.Contract(context.IERC20ABI, it));
+        var token0 = parseInt(fromTokenToStable(liquidityPoolData[1][0], await liquidityPoolTokens[0].methods.decimals().call()));
+        var token1 = parseInt(fromTokenToStable(liquidityPoolData[1][1], await liquidityPoolTokens[1].methods.decimals().call()));
+        var ratio = token0 / token1;
+        var firstTokenUsD = (utilities.formatNumber(value) * ratio) / 2;
+        firstTokenUsD = await fromStableToToken(firstTokenUsD, await liquidityPoolTokens[0].methods.decimals().call());
+        firstTokenUsD = utilities.numberToString(firstTokenUsD).split('.').join('');
+
+        var byTokenAmount = await amm.methods.byTokenAmount(liquidityPoolAddress, liquidityPoolTokens[0].options.address, utilities.numberToString(firstTokenUsD)).call();
+
+        var secondTokenValue = byTokenAmount[1][1];
+
+        var firstTokenStable = fromTokenToStable(firstTokenUsD, await liquidityPoolTokens[0].methods.decimals().call());
+        var secondTokenStable = fromTokenToStable(secondTokenValue, await liquidityPoolTokens[1].methods.decimals().call());
+
+        var stableCoinOutput = utilities.formatNumber(web3.utils.toBN(firstTokenStable).add(web3.utils.toBN(secondTokenStable)).toString());
+
+        var rate = utilities.formatNumber(value) / stableCoinOutput;
+
+        firstTokenUsD = utilities.numberToString(utilities.formatNumber(firstTokenUsD) * rate).split('.')[0];
+        secondTokenValue = utilities.numberToString(utilities.formatNumber(secondTokenValue) * rate).split('.')[0];
+
+        byTokenAmount = await amm.methods.byTokenAmount(liquidityPoolAddress, liquidityPoolTokens[0].options.address, firstTokenUsD).call();
+
+        liquidityPoolAmount = byTokenAmount[0];
+
+        var byLiquidityPoolData = await amm.methods.byLiquidityPoolAmount(liquidityPoolAddress, liquidityPoolAmount).call();
+
+        var exactAmountIndex = 0;
+        var otherAmountIndex = 1;
+
+        var amountsPlain = [
+            utilities.formatNumber(utilities.fromDecimals(byLiquidityPoolData[0][0], await liquidityPoolTokens[0].methods.decimals().call())),
+            utilities.formatNumber(utilities.fromDecimals(byLiquidityPoolData[0][1], await liquidityPoolTokens[1].methods.decimals().call())),
+        ]
+
+        var expectedUsdBalance = utilities.formatMoney(usdBalanceBefore + amountsPlain[0] + amountsPlain[1]);
+
+        var exactBalanceOfBefore = await liquidityPoolTokens[exactAmountIndex].methods.balanceOf(accounts[0]).call();
+        exactBalanceOfBefore = utilities.fromDecimals(exactBalanceOfBefore, await liquidityPoolTokens[exactAmountIndex].methods.decimals().call(), true);
+        console.log(exactBalanceOfBefore, await tokenData(liquidityPoolTokens[exactAmountIndex], "symbol"));
+        exactBalanceOfBefore = parseFloat(exactBalanceOfBefore);
+
+        var exactBalanceOfExpected = exactBalanceOfBefore - amountsPlain[exactAmountIndex];
+        exactBalanceOfExpected = utilities.formatMoney(exactBalanceOfExpected);
+
+        var otherBalanceOfBefore = await liquidityPoolTokens[otherAmountIndex].methods.balanceOf(accounts[0]).call();
+        otherBalanceOfBefore = utilities.fromDecimals(otherBalanceOfBefore, await liquidityPoolTokens[otherAmountIndex].methods.decimals().call(), true);
+        console.log(otherBalanceOfBefore, await tokenData(liquidityPoolTokens[otherAmountIndex], "symbol"));
+        otherBalanceOfBefore = parseFloat(otherBalanceOfBefore);
+
+        var otherBalanceOfExpected = otherBalanceOfBefore - amountsPlain[otherAmountIndex];
+        otherBalanceOfExpected = utilities.formatMoney(otherBalanceOfExpected);
+
+        console.log(amountsPlain);
+
+        try {
+            await liquidityPoolTokens[0].methods.approve(byLiquidityPool ? amm.options.address : wUSDExtensionController.options.address, await liquidityPoolTokens[0].methods.totalSupply().call()).send(blockchainConnection.getSendingOptions());
+        } catch (e) {}
+        try {
+            await liquidityPoolTokens[1].methods.approve(byLiquidityPool ? amm.options.address : wUSDExtensionController.options.address, await liquidityPoolTokens[1].methods.totalSupply().call()).send(blockchainConnection.getSendingOptions());
+        } catch (e) {}
+
+        if (byLiquidityPool) {
+            await amm.methods.addLiquidity({
+                liquidityPoolAddress,
+                amount: liquidityPoolAmount,
+                tokenAddress: utilities.voidEthereumAddress,
+                amountIsLiquidityPool: true,
+                involvingETH: false,
+                receiver: accounts[0]
+            }).send(blockchainConnection.getSendingOptions());
+
+            var pair = new web3.eth.Contract(context.IERC20ABI, liquidityPoolAddress);
+            liquidityPoolAmount = await pair.methods.balanceOf(accounts[0]).call();
+            await pair.methods.approve(wUSDExtensionController.options.address, await pair.methods.totalSupply().call()).send(blockchainConnection.getSendingOptions());
+        }
+
+        await wUSDExtensionController.methods.addLiquidity(ammPosition, liquidityPoolPosition, liquidityPoolAmount, byLiquidityPool).send(blockchainConnection.getSendingOptions());
+
+        var usdBalanceAfter = await usdCollection.methods.balanceOf(accounts[0], usdObjectId).call();
+        usdBalanceAfter = utilities.formatMoney(parseFloat(utilities.fromDecimals(usdBalanceAfter, "18", true)));
+
+        var exactBalanceOfAfter = await liquidityPoolTokens[exactAmountIndex].methods.balanceOf(accounts[0]).call();
+        exactBalanceOfAfter = utilities.fromDecimals(exactBalanceOfAfter, await liquidityPoolTokens[exactAmountIndex].methods.decimals().call(), true);
+        exactBalanceOfAfter = parseFloat(exactBalanceOfAfter);
+        exactBalanceOfAfter = utilities.formatMoney(exactBalanceOfAfter);
+
+        console.log(exactBalanceOfAfter, exactBalanceOfExpected);
+        try {
+            assert.strictEqual(exactBalanceOfAfter, exactBalanceOfExpected);
+        } catch (e) {
+            console.error(e.message);
+        }
+
+        var otherBalanceOfAfter = await liquidityPoolTokens[otherAmountIndex].methods.balanceOf(accounts[0]).call();
+        otherBalanceOfAfter = utilities.fromDecimals(otherBalanceOfAfter, await liquidityPoolTokens[otherAmountIndex].methods.decimals().call(), true);
+        otherBalanceOfAfter = parseFloat(otherBalanceOfAfter);
+        otherBalanceOfAfter = utilities.formatMoney(otherBalanceOfAfter);
+
+        console.log(otherBalanceOfAfter, otherBalanceOfExpected);
+        try {
+            assert.strictEqual(otherBalanceOfAfter, otherBalanceOfExpected);
+        } catch (e) {
+            console.error(e.message);
+        }
+
+        console.log(utilities.formatNumber(maxuSDExpected), utilities.formatNumber(usdBalanceAfter), utilities.formatNumber(expectedUsdBalance));
+        try {
+            assert(utilities.formatNumber(maxuSDExpected) >= utilities.formatNumber(usdBalanceAfter) && utilities.formatNumber(usdBalanceAfter) >= utilities.formatNumber(expectedUsdBalance));
+        } catch (e) {
+            console.error(e.message);
+        }
+    };
+
     before(async() => {
         try {
             await blockchainConnection.init;
+            await dfoHubManager.init;
+
             FarmMain = await compile('farming/FarmMain');
             // PinnedFarmMain = await compile('farming/PinnedFarmMain');
             FarmFactory = await compile('farming/FarmFactory');
@@ -296,7 +481,7 @@ describe("WUSDFarm", () => {
             secondaryToken !== utilities.voidEthereumAddress && await buyForETH(secondaryToken, ethToSpend);
             rewardToken !== utilities.voidEthereumAddress && rewardToken.options.address !== dfo.votingTokenAddress && await buyForETH(rewardToken, ethToSpend);
 
-            uniswapAMM = await new web3.eth.Contract(UniswapV2AMMV1.abi).deploy({ data: UniswapV2AMMV1.bin, arguments: [uniswapV2Router.options.address] }).send(blockchainConnection.getSendingOptions());
+            uniswapAMM = await new web3.eth.Contract(UniswapV2AMMV1.abi, context.uniswapAmmAddress);
 
             var res = await uniswapAMM.methods.byLiquidityPool(liquidityPool.options.address).call();
             console.log(res);
@@ -311,6 +496,14 @@ describe("WUSDFarm", () => {
             await initActor("Porco", accounts[6], false, 50, false);
             await initActor("Ladro", accounts[7], false, 50, false);
             await initActor("Cane", accounts[8], false, 50, false);
+
+            USDT = new web3.eth.Contract(context.IERC20ABI, context.usdtTokenAddress);
+            USDC = new web3.eth.Contract(context.IERC20ABI, context.usdcTokenAddress);
+            DAI = new web3.eth.Contract(context.IERC20ABI, context.daiTokenAddress);
+    
+            await buyForETH(USDT, 50);
+            await buyForETH(USDC, 50);
+            await buyForETH(DAI, 50);
         } catch (error) {
             console.error(error);
         }
@@ -318,19 +511,11 @@ describe("WUSDFarm", () => {
 
     it("should deploy farm factory, extensions and finalize proposals", async() => {
         try {
-            rewardDestination = dfo.mvdWalletAddress;
-            var farmMainModel = await new web3.eth.Contract(FarmMain.abi).deploy({ data: FarmMain.bin }).send(blockchainConnection.getSendingOptions());
-            console.log(`simple farm model deployed at ${farmMainModel.options.address}`);
-            // var pinnedFarmModel = await new web3.eth.Contract(PinnedFarmMain.abi).deploy({data : PinnedFarmMain.bin}).send(blockchainConnection.getSendingOptions());  
-            var farmExtensionModel = await new web3.eth.Contract(FarmExtension.abi).deploy({ data: FarmExtension.bin }).send(blockchainConnection.getSendingOptions());
-            console.log(`farm extension model deployed at ${farmExtensionModel.options.address}`);
 
-            farmFactory = await new web3.eth.Contract(FarmFactory.abi).deploy({ data: FarmFactory.bin, arguments: [dfo.doubleProxyAddress, farmMainModel.options.address, farmExtensionModel.options.address, 0, "google.com", "google.com"] }).send(blockchainConnection.getSendingOptions());
+            farmFactory = new web3.eth.Contract(FarmFactory.abi, "0x6BC8530fecc0001b9FC0bf5DAA17873e847616ed");
             console.log(`farm factory deployed at ${farmFactory.options.address}`);
 
-            var dfoFarmExtensionModel = await new web3.eth.Contract(DFOBasedFarmExtension.abi).deploy({ data: DFOBasedFarmExtension.bin }).send(blockchainConnection.getSendingOptions());
-            console.log(`dfo farm extension model deployed at ${dfoFarmExtensionModel.options.address}`);
-            dFOBasedFarmExtensionFactory = await new web3.eth.Contract(DFOBasedFarmExtensionFactory.abi).deploy({ data: DFOBasedFarmExtensionFactory.bin, arguments: [mainDFO.doubleProxyAddress, dfoFarmExtensionModel.options.address] }).send(blockchainConnection.getSendingOptions());
+            dFOBasedFarmExtensionFactory = new web3.eth.Contract(DFOBasedFarmExtensionFactory.abi, "0x7ee9297dabB036cAa6F526dD0459315c7237e017");
             console.log(`dfo based farm extension factory deployed at ${dFOBasedFarmExtensionFactory.options.address}`);
 
             var transaction = await dFOBasedFarmExtensionFactory.methods.cloneModel().send(blockchainConnection.getSendingOptions());
@@ -339,31 +524,32 @@ describe("WUSDFarm", () => {
             farmMainExtension = new web3.eth.Contract(FarmExtension.abi, farmMainExtensionAddress);
             console.log(`simple farm extension deployed at ${farmMainExtension.options.address}`);
 
-            var code = fs.readFileSync(path.resolve(__dirname, '..', 'contracts/farming/dfo/ManageFarmingFunctionality.sol'), 'UTF-8').format(farmMainExtension.options.address);
-            var proposal = await dfoManager.createProposal(dfo, "manageFarming", true, code, "manageFarming(address,uint256,bool,address,address,uint256,bool)", false, true);
-            await dfoManager.finalizeProposal(dfo, proposal);
-
-            transaction = await farmFactory.methods.cloneFarmDefaultExtension().send(blockchainConnection.getSendingOptions());
-            receipt = await web3.eth.getTransactionReceipt(transaction.transactionHash);
-            clonedDefaultFarmExtension = web3.eth.abi.decodeParameter("address", receipt.logs.filter(it => it.topics[0] === web3.utils.sha3('ExtensionCloned(address)'))[0].topics[1])
-            console.log(`cloned default farm extension deployed at ${clonedDefaultFarmExtension}`);
-            clonedFarmExtension = new web3.eth.Contract(FarmExtension.abi, clonedDefaultFarmExtension);
-
             var WUSDFarmingExtension = await compile('WUSD/WUSDFarmingExtension');
-            wUSDFarmingExtension = await new web3.eth.Contract(WUSDFarmingExtension.abi).deploy({ data: WUSDFarmingExtension.bin }).send(blockchainConnection.getSendingOptions());
+            wUSDFarmingExtension = await new web3.eth.Contract(WUSDFarmingExtension.abi, "0xD3c460E2b32539e94Eef9ED3498252aB7E4095c0");
+
+            var WUSDExtensionController = await compile("WUSD/WUSDExtensionController");
+            wUSDExtensionController = new web3.eth.Contract(WUSDExtensionController.abi, context.wusdExtensionControllerAddress);
+
+            var data = await wUSDExtensionController.methods.wusdInfo().call();
+            usdCollection = new web3.eth.Contract(context.ethItemNativeABI, data[0]);
+            usdObjectId = data[1];
+
+            wusdInteroperable = new web3.eth.Contract(context.IERC20ABI, data[2]);
 
         } catch (error) {
             console.error(`error is`, error);
         }
     });
-    it("should deploy simple farm main contract", async() => {
+
+    async function getInfos() {
+
         var wusdETH = (await uniswapAMM.methods.byTokens([context.wusdInteroperableAddress, context.wethTokenAddress]).call())[2];
         var wusdUSDC = (await uniswapAMM.methods.byTokens([context.wusdInteroperableAddress, context.usdcTokenAddress]).call())[2];
 
         var infos = [
             {
                 free: true,
-                blockDuration: 384000,
+                blockDuration: 192000,
                 originalRewardPerBlock: 0,
                 minStakeable: 0,
                 maxStakeable: 0,
@@ -378,7 +564,7 @@ describe("WUSDFarm", () => {
                 lastSetupIndex: 0
             }, {
                 free: true,
-                blockDuration: 384000,
+                blockDuration: 192000,
                 originalRewardPerBlock: 0,
                 minStakeable: 0,
                 maxStakeable: 0,
@@ -387,18 +573,32 @@ describe("WUSDFarm", () => {
                 liquidityPoolTokenAddress: wusdUSDC,
                 mainTokenAddress: context.wusdInteroperableAddress,
                 ethereumAddress: utilities.voidEthereumAddress,
-                involvingETH: true,
+                involvingETH: false,
                 penaltyFee: 0,
                 setupsCount: 0,
                 lastSetupIndex: 0
             }
         ];
-        var percentages = [utilities.toDecimals("0.8", 18)];
+
+        var percentages = [utilities.toDecimals("0.4", 18)];
+
+        return {infos, percentages};
+    }
+
+    it("should deploy simple farm main contract", async() => {
+
+        var {infos, percentages} = await getInfos();
+
+        console.log(infos, percentages);
+
+        console.log(dfoHubManager.dfos.covenants.doubleProxyAddress, context.wusdExtensionControllerAddress, ethItemOrchestrator.options.address, context.wusdInteroperableAddress);
+
         var extensionPayload = wUSDFarmingExtension.methods.init(
-            context.covenantsDoubleProxyAddress,
+            dfoHubManager.dfos.covenants.doubleProxyAddress,
             context.wusdExtensionControllerAddress,
             infos,
-            percentages
+            percentages,
+            utilities.toDecimals("0.867", 18)
         ).encodeABI();
 
         var types = [
@@ -419,21 +619,296 @@ describe("WUSDFarm", () => {
 
         var payload = web3.utils.sha3(`init(${types.join(',')})`).substring(0, 10) + (web3.eth.abi.encodeParameters(types, params).substring(2));
 
+        console.log(payload);
+
         var deployTransaction = await farmFactory.methods.deploy(payload).send(blockchainConnection.getSendingOptions());
         deployTransaction = await web3.eth.getTransactionReceipt(deployTransaction.transactionHash);
         var farmMainContractAddress = web3.eth.abi.decodeParameter("address", deployTransaction.logs.filter(it => it.topics[0] === web3.utils.sha3("FarmMainDeployed(address,address,bytes)"))[0].topics[1]);
 
         farmMainContract = await new web3.eth.Contract(FarmMain.abi, farmMainContractAddress);
-
-        console.log(farmMainContract.options.address);
     });
-    it("should activate both the setups", async() => {
+
+    it("WUSD Extension Controller update Proposal", async () => {
+        var rebalanceByCreditReceivers = `rebalanceByCreditReceivers[0] = ${web3.utils.toChecksumAddress(wUSDFarmingExtension.options.address)};` 
+        var rebalanceByCreditPercentages = `rebalanceByCreditPercentages[0] = ${utilities.toDecimals("0.4", 18)};` 
+        var length = 1;
+        var currentPercentage = (await wUSDExtensionController.methods.rebalanceByCreditReceiversInfo().call())[2];
+        currentPercentage = 0;
+        console.log(await wUSDExtensionController.methods.rebalanceByCreditReceiversInfo().call());
+        console.log(utilities.fromDecimals((await wUSDExtensionController.methods.rebalanceByCreditReceiversInfo().call())[2], 18));
+        console.log(utilities.fromDecimals((await wUSDExtensionController.methods.wusdNote2Info().call())[4], 18));
+        console.log(utilities.fromDecimals((await wUSDExtensionController.methods.wusdNote5Info().call())[4], 18));
+        var fileName = '2';
+        var code = fs.readFileSync(path.resolve(__dirname, '..', `resources/WUSDNewRebalanceTimeAndFarmingExtension${fileName}.sol`), 'UTF-8').format(context.wusdExtensionControllerAddress, 192000, length, rebalanceByCreditReceivers, rebalanceByCreditPercentages, currentPercentage, wUSDFarmingExtension.options.address);
+        console.log(code);
+        var proposal;
+        if(fileName) {
+            proposal = await dfoHubManager.createProposal("covenants", "manageFarming", true, code, "manageFarming(address,uint256,bool,address,address,uint256,bool)", false, true);
+        } else {
+            proposal = await dfoHubManager.createProposal("covenants", "", true, code, "callOneTime(address)");
+        }
+        await dfoHubManager.finalizeProposal(proposal);
+        console.log(await wUSDExtensionController.methods.rebalanceByCreditReceiversInfo().call());
+    });
+
+    async function rebalanceByCredit() {
+        await getUSD(0, 0, 10000 , false);
+
+        await usdCollection.methods.burn(usdObjectId, utilities.toDecimals(8000, 18)).send(blockchainConnection.getSendingOptions());
+
+        var differences = await wUSDExtensionController.methods.differences().call();
+        var credit = differences[0];
+        console.log(credit);
+        console.log(utilities.fromDecimals(credit, 18));
+
+        var rebalanceByCreditReceiversInfo = await wUSDExtensionController.methods.rebalanceByCreditReceiversInfo().call();
+
+        var receivers = rebalanceByCreditReceiversInfo[0].map(it => it);
+        receivers.push(accounts[0]);
+
+        var percentages = rebalanceByCreditReceiversInfo[1].map(it => it);
+        percentages.push(rebalanceByCreditReceiversInfo[2]);
+
+        var noteInfo = await wUSDExtensionController.methods.wusdNote2Info().call();
+        receivers.push(noteInfo[3]);
+        percentages.push(noteInfo[4]);
+
+        noteInfo = await wUSDExtensionController.methods.wusdNote5Info().call();
+        receivers.push(noteInfo[3]);
+        percentages.push(noteInfo[4]);
+
+        receivers.push(rebalanceByCreditReceiversInfo[3]);
+
+        var totalPercentage = '0';
+        percentages.forEach(it => totalPercentage = web3.utils.toBN(totalPercentage).add(web3.utils.toBN(it)).toString());
+        percentages.push(web3.utils.toBN(await wUSDExtensionController.methods.ONE_HUNDRED().call()).sub(web3.utils.toBN(totalPercentage)).toString());
+
+        var adds = [];
+        for (var percentage of percentages) {
+            adds.push(await calculatePercentage(credit, percentage));
+        }
+
+        var sum = '0';
+        adds.forEach(it => sum = web3.utils.toBN(sum).add(web3.utils.toBN(it)).toString());
+
+        credit = await utilities.fromDecimals(credit, 18);
+        sum = await utilities.fromDecimals(sum, 18);
+
+        assert.strictEqual(credit, sum);
+
+        var expecteds = [];
+        for (var i in receivers) {
+            var balance = await usdCollection.methods.balanceOf(receivers[i], usdObjectId).call();
+            balance = web3.utils.toBN(balance).add(web3.utils.toBN(adds[i])).toString();
+            expecteds.push(utilities.fromDecimals(balance, 18));
+        }
+
+        await wUSDExtensionController.methods.rebalanceByCredit().send(blockchainConnection.getSendingOptions());
+
+        for (var i in receivers) {
+            var balance = await usdCollection.methods.balanceOf(receivers[i], usdObjectId).call();
+            balance = utilities.fromDecimals(balance, 18);
+            assert.strictEqual(balance, expecteds[i]);
+        }
+    }
+
+    async function logSetups() {
+        var length = await farmMainContract.methods._farmingSetupsCount().call();
+        for(var i = 0; i < length; i++) {
+            console.log(await farmMainContract.methods.setup(i).call());
+        }
+    }
+
+    it("Cannot rebalance", async () => {
+        try {
+            await wUSDFarmingExtension.methods.rebalanceRewardsPerBlock().send(blockchainConnection.getSendingOptions());
+            assert(false);
+        } catch(e) {
+            assert.notStrictEqual((e.message || e).indexOf("Invalid block"), -1);
+        }
+    });
+
+    it("Rebalance By Credit by Burn 1", rebalanceByCredit);
+
+    it("Rebalance Farm 1", async () => {
+        var expectedBalance = await wusdInteroperable.methods.balanceOf(wUSDFarmingExtension.options.address).call();
+        var expectedDFOBalance = await wusdInteroperable.methods.balanceOf(dfoHubManager.dfos.covenants.mvdWalletAddress).call();
+        var percentage = await wUSDFarmingExtension.methods.rewardCreditPercentage().call();
+        var amount = await calculatePercentage(expectedDFOBalance, percentage);
+        console.log("Before:", expectedBalance, expectedDFOBalance, amount);
+        expectedBalance = web3.utils.toBN(expectedBalance).add(web3.utils.toBN(amount)).toString();
+        expectedDFOBalance = web3.utils.toBN(expectedDFOBalance).sub(web3.utils.toBN(amount)).toString();
+        console.log("After:", expectedBalance, expectedDFOBalance);
+        await wUSDFarmingExtension.methods.rebalanceRewardsPerBlock().send(blockchainConnection.getSendingOptions());
+        var balance = await wusdInteroperable.methods.balanceOf(wUSDFarmingExtension.options.address).call();
+        var dFOBalance = await wusdInteroperable.methods.balanceOf(dfoHubManager.dfos.covenants.mvdWalletAddress).call();
+        expectedBalance = utilities.fromDecimals(expectedBalance, 18);
+        expectedDFOBalance = utilities.fromDecimals(expectedDFOBalance, 18);
+        balance = utilities.fromDecimals(balance, 18);
+        dFOBalance = utilities.fromDecimals(dFOBalance, 18);
+
+        console.log(balance, expectedBalance);
+        console.log(dFOBalance, expectedDFOBalance);
+        assert.strictEqual(balance, expectedBalance);
+        assert.strictEqual(dFOBalance, expectedDFOBalance);
+    });
+
+    it("Fair", async () => {
+        try {
+            await wUSDFarmingExtension.methods.rebalanceRewardsPerBlock().send(blockchainConnection.getSendingOptions());
+            assert(false);
+        } catch(e) {
+            assert.notStrictEqual((e.message || e).indexOf("Invalid block"), -1);
+        }
+    });
+
+    it("should activate both the setup 1", async () => {
         await farmMainContract.methods.activateSetup(0).send(blockchainConnection.getSendingOptions());
+    });
+
+    it("Change Models", async () => {
+
+        console.log(await wUSDFarmingExtension.methods.models().call());
+
+        var {infos, percentages} = await getInfos();
+
+        infos.splice(0, 1);
+        percentages = [];
+
+        var infosCode = infos.map((it, i) => `        farmingSetups[${i}] = FarmingSetupInfo(${it.free}, ${it.blockDuration}, ${it.originalRewardPerBlock}, ${it.minStakeable}, ${it.maxStakeable}, ${it.renewTimes}, ${it.ammPlugin}, ${it.liquidityPoolTokenAddress}, ${it.mainTokenAddress}, ${it.ethereumAddress}, ${it.involvingETH}, ${it.penaltyFee}, ${it.setupsCount}, ${it.lastSetupIndex});`).join('\n').trim('');
+        var percentagesCode = percentages.map((it, i) => `rebalancePercentages[${i}] = ${utilities.numberToString(it)};`).join('\n').trim();
+
+        var code = fs.readFileSync(path.resolve(__dirname, '..', `resources/WUSDSetModelsAndPercentages.sol`), 'UTF-8').format(infos.length, infosCode, percentages.length, percentagesCode, wUSDFarmingExtension.options.address);
+        console.log(code);
+        var proposal = await dfoHubManager.createProposal("covenants", "", true, code, "callOneTime(address)");
+        await dfoHubManager.finalizeProposal(proposal);
+
+        console.log(await wUSDFarmingExtension.methods.models().call());
+    });
+
+    it("Change Models 2", async() => {
+
+        console.log(await wUSDFarmingExtension.methods.models().call());
+
+        var {infos, percentages} = await getInfos();
+
+        var infosCode = infos.map((it, i) => `        farmingSetups[${i}] = FarmingSetupInfo(${it.free}, ${it.blockDuration}, ${it.originalRewardPerBlock}, ${it.minStakeable}, ${it.maxStakeable}, ${it.renewTimes}, ${it.ammPlugin}, ${it.liquidityPoolTokenAddress}, ${it.mainTokenAddress}, ${it.ethereumAddress}, ${it.involvingETH}, ${it.penaltyFee}, ${it.setupsCount}, ${it.lastSetupIndex});`).join('\n').trim('');
+        var percentagesCode = percentages.map((it, i) => `rebalancePercentages[${i}] = ${utilities.numberToString(it)};`).join('\n').trim();
+
+        var code = fs.readFileSync(path.resolve(__dirname, '..', `resources/WUSDSetModelsAndPercentages.sol`), 'UTF-8').format(infos.length, infosCode, percentages.length, percentagesCode, wUSDFarmingExtension.options.address);
+        console.log(code);
+        var proposal = await dfoHubManager.createProposal("covenants", "", true, code, "callOneTime(address)");
+        await dfoHubManager.finalizeProposal(proposal);
+
+        console.log(await wUSDFarmingExtension.methods.models().call());
+    });
+
+    it("Rebalance By Credit by Burn 2", async () => {
+        await blockchainConnection.fastForward(await wUSDExtensionController.methods.rebalanceByCreditBlockInterval().call());
+        await rebalanceByCredit();
+    });
+
+    it("Rebalance Farm 2", async () => {
+        var expectedBalance = await wusdInteroperable.methods.balanceOf(wUSDFarmingExtension.options.address).call();
+        var expectedDFOBalance = await wusdInteroperable.methods.balanceOf(dfoHubManager.dfos.covenants.mvdWalletAddress).call();
+        var percentage = await wUSDFarmingExtension.methods.rewardCreditPercentage().call();
+        var amount = await calculatePercentage(expectedDFOBalance, percentage);
+        console.log("Before:", expectedBalance, expectedDFOBalance, amount);
+        expectedBalance = web3.utils.toBN(expectedBalance).add(web3.utils.toBN(amount)).toString();
+        expectedDFOBalance = web3.utils.toBN(expectedDFOBalance).sub(web3.utils.toBN(amount)).toString();
+        console.log("After:", expectedBalance, expectedDFOBalance);
+        await wUSDFarmingExtension.methods.rebalanceRewardsPerBlock().send(blockchainConnection.getSendingOptions());
+        var balance = await wusdInteroperable.methods.balanceOf(wUSDFarmingExtension.options.address).call();
+        var dFOBalance = await wusdInteroperable.methods.balanceOf(dfoHubManager.dfos.covenants.mvdWalletAddress).call();
+        expectedBalance = utilities.fromDecimals(expectedBalance, 18);
+        expectedDFOBalance = utilities.fromDecimals(expectedDFOBalance, 18);
+        balance = utilities.fromDecimals(balance, 18);
+        dFOBalance = utilities.fromDecimals(dFOBalance, 18);
+
+        console.log(balance, expectedBalance);
+        console.log(dFOBalance, expectedDFOBalance);
+        assert.strictEqual(balance, expectedBalance);
+        assert.strictEqual(dFOBalance, expectedDFOBalance);
+    });
+
+    it("should activate both the setups 2", async () => {
         await farmMainContract.methods.activateSetup(1).send(blockchainConnection.getSendingOptions());
-        var availableSetups = await farmMainContract.methods.setups().call();
-        await Promise.all(availableSetups.map(async(setup) => {
-            console.log(setup);
-            assert.strictEqual(setup.active, true);
-        }))
+        await farmMainContract.methods.activateSetup(2).send(blockchainConnection.getSendingOptions());
+    });
+
+    it("Rebalance By Credit by Burn 3", async () => {
+        await blockchainConnection.fastForward(await wUSDExtensionController.methods.rebalanceByCreditBlockInterval().call());
+        await rebalanceByCredit();
+    });
+
+    it("Rebalance Farm 3", async () => {
+        var expectedBalance = await wusdInteroperable.methods.balanceOf(wUSDFarmingExtension.options.address).call();
+        var expectedDFOBalance = await wusdInteroperable.methods.balanceOf(dfoHubManager.dfos.covenants.mvdWalletAddress).call();
+        var percentage = await wUSDFarmingExtension.methods.rewardCreditPercentage().call();
+        var amount = await calculatePercentage(expectedDFOBalance, percentage);
+        console.log("Before:", expectedBalance, expectedDFOBalance, amount);
+        expectedBalance = web3.utils.toBN(expectedBalance).add(web3.utils.toBN(amount)).toString();
+        expectedDFOBalance = web3.utils.toBN(expectedDFOBalance).sub(web3.utils.toBN(amount)).toString();
+        console.log("After:", expectedBalance, expectedDFOBalance);
+        await wUSDFarmingExtension.methods.rebalanceRewardsPerBlock().send(blockchainConnection.getSendingOptions());
+        var balance = await wusdInteroperable.methods.balanceOf(wUSDFarmingExtension.options.address).call();
+        var dFOBalance = await wusdInteroperable.methods.balanceOf(dfoHubManager.dfos.covenants.mvdWalletAddress).call();
+        expectedBalance = utilities.fromDecimals(expectedBalance, 18);
+        expectedDFOBalance = utilities.fromDecimals(expectedDFOBalance, 18);
+        balance = utilities.fromDecimals(balance, 18);
+        dFOBalance = utilities.fromDecimals(dFOBalance, 18);
+
+        console.log(balance, expectedBalance);
+        console.log(dFOBalance, expectedDFOBalance);
+        assert.strictEqual(balance, expectedBalance);
+        assert.strictEqual(dFOBalance, expectedDFOBalance);
+    });
+
+    it("should activate both the setups 3", async () => {
+        await farmMainContract.methods.activateSetup(3).send(blockchainConnection.getSendingOptions());
+        await farmMainContract.methods.activateSetup(4).send(blockchainConnection.getSendingOptions());
+    });
+
+    it("Rebalance Farm 4", async () => {
+        await blockchainConnection.fastForward(await wUSDExtensionController.methods.rebalanceByCreditBlockInterval().call());
+        await rebalanceByCredit();
+        await blockchainConnection.fastForward(await wUSDExtensionController.methods.rebalanceByCreditBlockInterval().call());
+        await rebalanceByCredit();
+        await rebalanceFarm();
+    });
+
+    async function rebalanceFarm() {
+        var expectedBalance = await wusdInteroperable.methods.balanceOf(wUSDFarmingExtension.options.address).call();
+        var expectedDFOBalance = await wusdInteroperable.methods.balanceOf(dfoHubManager.dfos.covenants.mvdWalletAddress).call();
+        var percentage = await wUSDFarmingExtension.methods.rewardCreditPercentage().call();
+        var amount = await calculatePercentage(expectedDFOBalance, percentage);
+        console.log("Before:", expectedBalance, expectedDFOBalance, amount);
+        expectedBalance = web3.utils.toBN(expectedBalance).add(web3.utils.toBN(amount)).toString();
+        expectedDFOBalance = web3.utils.toBN(expectedDFOBalance).sub(web3.utils.toBN(amount)).toString();
+        console.log("After:", expectedBalance, expectedDFOBalance);
+        await wUSDFarmingExtension.methods.rebalanceRewardsPerBlock().send(blockchainConnection.getSendingOptions());
+        var balance = await wusdInteroperable.methods.balanceOf(wUSDFarmingExtension.options.address).call();
+        var dFOBalance = await wusdInteroperable.methods.balanceOf(dfoHubManager.dfos.covenants.mvdWalletAddress).call();
+        expectedBalance = utilities.fromDecimals(expectedBalance, 18);
+        expectedDFOBalance = utilities.fromDecimals(expectedDFOBalance, 18);
+        balance = utilities.fromDecimals(balance, 18);
+        dFOBalance = utilities.fromDecimals(dFOBalance, 18);
+
+        console.log(balance, expectedBalance);
+        console.log(dFOBalance, expectedDFOBalance);
+        assert.strictEqual(balance, expectedBalance);
+        assert.strictEqual(dFOBalance, expectedDFOBalance);
+    }
+
+    it("should activate both the setups 4", async () => {
+        await farmMainContract.methods.activateSetup(5).send(blockchainConnection.getSendingOptions());
+        await farmMainContract.methods.activateSetup(6).send(blockchainConnection.getSendingOptions());
+        await farmMainContract.methods.activateSetup(7).send(blockchainConnection.getSendingOptions());
+        try {
+            await farmMainContract.methods.activateSetup(8).send(blockchainConnection.getSendingOptions());
+            assert(false);
+        } catch(e) {
+            assert.notStrictEqual((e.message || e).indexOf("Invalid toggle"), -1);
+        }
     });
 })
