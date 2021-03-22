@@ -32,7 +32,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
      // farm token collection
     address public _farmTokenCollection;
     // mapping containing all the currently available farming setups info
-    mapping(uint256 => FarmingSetupInfo) public _setupsInfo;
+    mapping(uint256 => FarmingSetupInfo) private _setupsInfo;
     // counter for the farming setup info
     uint256 public _farmingSetupsInfoCount;
     // mapping containing all the currently available farming setups
@@ -45,12 +45,12 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
     mapping(uint256 => uint256) private _rewardPerTokenPerSetup;
     // mapping containing the reward per token paid per position
     mapping(uint256 => uint256) private _rewardPerTokenPaid;
-    // mapping containing whether a liquidity mining position has been partially reedemed or not
-    mapping(uint256 => uint256) private _partiallyRedeemed;
+    // mapping containing whether a farming position has been partially reedemed or not
+    mapping(uint256 => uint256) public _partiallyRedeemed;
     // mapping containing object id to setup index
     mapping(uint256 => uint256) private _objectIdSetup;
     // mapping containing all the number of opened positions for each setups
-    mapping(uint256 => uint256) public _setupPositionsCount;
+    mapping(uint256 => uint256) private _setupPositionsCount;
     // mapping containing all the reward received/paid per setup
     mapping(uint256 => uint256) public _rewardReceived;
     mapping(uint256 => uint256) public _rewardPaid;
@@ -80,7 +80,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
 
     /** Extension methods */
 
-    /** @dev initializes the liquidity mining contract.
+    /** @dev initializes the farming contract.
       * @param extension extension address.
       * @param extensionInitData lm extension init payload.
       * @param orchestrator address of the eth item orchestrator.
@@ -96,10 +96,11 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
             extensionReturnCall = _call(_extension, extensionInitData);
         }
         (_farmTokenCollection,) = IEthItemOrchestrator(orchestrator).createNative(abi.encodeWithSignature("init(string,string,bool,string,address,bytes)", "Covenants Farming", "cFARM", true, IFarmFactory(_factory).getFarmTokenCollectionURI(), address(this), ""), "");
-        FarmingSetupInfo[] memory farmingSetupInfos = abi.decode(farmingSetupInfosBytes, (FarmingSetupInfo[]));
-        require(farmingSetupInfos.length > 0, "Invalid length");
-        for(uint256 i = 0; i < farmingSetupInfos.length; i++) {
-            _setOrAddFarmingSetupInfo(farmingSetupInfos[i], true, false, 0);
+        if(farmingSetupInfosBytes.length > 0) {
+            FarmingSetupInfo[] memory farmingSetupInfos = abi.decode(farmingSetupInfosBytes, (FarmingSetupInfo[]));
+            for(uint256 i = 0; i < farmingSetupInfos.length; i++) {
+                _setOrAddFarmingSetupInfo(farmingSetupInfos[i], true, false, 0);
+            }
         }
     }
 
@@ -115,11 +116,15 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
       * @param positionId id of the position.
       * @return farming position with the given id.
      */
-    function position(uint256 positionId) public view returns (FarmingPosition memory) {
+    function position(uint256 positionId) public override view returns (FarmingPosition memory) {
         return _positions[positionId];
     }
 
-    function setups() public view returns (FarmingSetup[] memory) {
+    function setup(uint256 setupIndex) public override view returns (FarmingSetup memory, FarmingSetupInfo memory) {
+        return (_setups[setupIndex], _setupsInfo[_setups[setupIndex].infoIndex]);
+    }
+
+    function setups() public override view returns (FarmingSetup[] memory) {
         FarmingSetup[] memory farmingSetups = new FarmingSetup[](_farmingSetupsCount);
         for (uint256 i = 0; i < _farmingSetupsCount; i++) {
             farmingSetups[i] = _setups[i];
@@ -132,13 +137,30 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
         _toggleSetup(_setupsInfo[setupInfoIndex].lastSetupIndex);
     }
 
-    function openPosition(FarmingPositionRequest memory request) public payable activeSetupOnly(request.setupIndex) returns(uint256 positionId) {
+    function transferPosition(address to, uint256 positionId) public byPositionOwner(positionId) {
+        // retrieve liquidity mining position
+        FarmingPosition memory pos = _positions[positionId];
+        require(
+            to != address(0) &&
+            pos.creationBlock != 0,
+            "Invalid position"
+        );
+        // pos.uniqueOwner = to;
+        uint256 newPositionId = uint256(keccak256(abi.encode(to, _setupsInfo[_setups[pos.setupIndex].infoIndex].free ? 0 : block.number, pos.setupIndex)));
+        require(_positions[newPositionId].creationBlock == 0, "Invalid transfer");
+        _positions[newPositionId] = abi.decode(abi.encode(pos), (FarmingPosition));
+        _positions[newPositionId].uniqueOwner = to;
+        delete _positions[positionId];
+        emit Transfer(newPositionId, msg.sender, to);
+    }
+
+    function openPosition(FarmingPositionRequest memory request) public override payable activeSetupOnly(request.setupIndex) returns(uint256 positionId) {
         // retrieve the setup
         FarmingSetup storage chosenSetup = _setups[request.setupIndex];
         // retrieve the unique owner
         address uniqueOwner = (request.positionOwner != address(0)) ? request.positionOwner : msg.sender;
         // create the position id
-        positionId = uint256(keccak256(abi.encode(uniqueOwner, request.setupIndex)));
+        positionId = uint256(keccak256(abi.encode(uniqueOwner, _setupsInfo[chosenSetup.infoIndex].free ? 0 : block.number, request.setupIndex)));
         require(_positions[positionId].creationBlock == 0, "Invalid open");
         // create the lp data for the amm
         (LiquidityPoolData memory liquidityPoolData, uint256 mainTokenAmount) = _addLiquidity(request.setupIndex, request);
@@ -167,7 +189,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
         emit Transfer(positionId, address(0), uniqueOwner);
     }
 
-    function addLiquidity(uint256 positionId, FarmingPositionRequest memory request) public payable activeSetupOnly(request.setupIndex) byPositionOwner(positionId) {
+    function addLiquidity(uint256 positionId, FarmingPositionRequest memory request) public override payable activeSetupOnly(request.setupIndex) byPositionOwner(positionId) {
         // retrieve farming position
         FarmingPosition storage farmingPosition = _positions[positionId];
         FarmingSetup storage chosenSetup = _setups[farmingPosition.setupIndex];
@@ -482,13 +504,15 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
         // amount is lp check
         if (liquidityPoolData.amountIsLiquidityPool || !_setupsInfo[_setups[setupIndex].infoIndex].involvingETH) {
             require(msg.value == 0, "ETH not involved");
+        }
+        if (liquidityPoolData.amountIsLiquidityPool) {
+            return(liquidityPoolData, tokenAmount);
+        }
+        // retrieve the poolTokenAmount from the amm
+        if(liquidityPoolData.involvingETH) {
+            (liquidityPoolData.amount,,) = amm.addLiquidity{value : msg.value}(liquidityPoolData);
         } else {
-            // retrieve the poolTokenAmount from the amm
-            if(liquidityPoolData.involvingETH) {
-                (liquidityPoolData.amount,,) = amm.addLiquidity{value : msg.value}(liquidityPoolData);
-            } else {
-                (liquidityPoolData.amount,,) = amm.addLiquidity(liquidityPoolData);
-            }
+            (liquidityPoolData.amount,,) = amm.addLiquidity(liquidityPoolData);
         }
     }
 
@@ -652,9 +676,9 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
       */
     function _burnFarmTokenAmount(uint256 objectId, uint256 amount) private {
         INativeV1 tokenCollection = INativeV1(_farmTokenCollection);
-        // transfer the liquidity mining farm token to this contract
+        // transfer the farm token to this contract
         tokenCollection.safeTransferFrom(msg.sender, address(this), objectId, amount, "");
-        // burn the liquidity mining farm token
+        // burn the farm token
         tokenCollection.burn(objectId, amount);
     }
 

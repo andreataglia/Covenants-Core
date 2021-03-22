@@ -134,13 +134,29 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
         _toggleSetup(_setupsInfo[setupInfoIndex].lastSetupIndex);
     }
 
+    function transfer(address to, uint256 positionId) public byPositionOwner(positionId) {
+        // retrieve liquidity mining position
+        FarmingPosition memory pos = _positions[positionId];
+        require(
+            to != address(0) &&
+            pos.creationBlock != 0,
+            "Invalid position"
+        );
+        // pos.uniqueOwner = to;
+        uint256 newPositionId = uint256(keccak256(abi.encode(to, _setupsInfo[_setups[pos.setupIndex].infoIndex].free ? 0 : block.number, pos.setupIndex)));
+        require(_positions[newPositionId].creationBlock == 0 || _setupsInfo[_setups[pos.setupIndex].infoIndex].free, "Invalid transfer");
+        _positions[newPositionId] = abi.decode(abi.encode(pos), (FarmingPosition));
+        delete _positions[positionId];
+        emit Transfer(newPositionId, msg.sender, to);
+    }
+
     function openPosition(FarmingPositionRequest memory request) public payable activeSetupOnly(request.setupIndex) returns(uint256 positionId) {
         // retrieve the setup
         FarmingSetup storage chosenSetup = _setups[request.setupIndex];
         // retrieve the unique owner
         address uniqueOwner = (request.positionOwner != address(0)) ? request.positionOwner : msg.sender;
         // create the position id
-        positionId = uint256(keccak256(abi.encode(uniqueOwner, request.setupIndex)));
+        positionId = uint256(keccak256(abi.encode(uniqueOwner, _setupsInfo[chosenSetup.infoIndex].free ? 0 : block.number, request.setupIndex)));
         require(_positions[positionId].creationBlock == 0, "Invalid open");
         // create the lp data for the amm
         (LiquidityPoolData memory liquidityPoolData, uint256 mainTokenAmount) = _addLiquidity(request.setupIndex, request);

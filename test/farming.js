@@ -88,7 +88,7 @@ describe("Farming", () => {
         var setups = await farmMainContract.methods.setups().call();
         console.log(setups);
         var setup = setups[setupIndex];
-        var setupInfo = await farmMainContract.methods._setupsInfo(setup.infoIndex).call();
+        var setupInfo = (await farmMainContract.methods.setup(setup.infoIndex).call())[1];
         console.log(setupInfo);
         var ammPlugin = new web3.eth.Contract(UniswapV2AMMV1.abi, setupInfo.ammPlugin);
         var liquidityPoolTokenAddress = setupInfo.liquidityPoolTokenAddress;
@@ -131,7 +131,7 @@ describe("Farming", () => {
             stake.amount = await liquidityPoolTokenContract.methods.balanceOf(actor.address).call();
         }
 
-        var result = await farmMainContract.methods.openPosition(stake).send({...actor.from, value: (!stake.amountIsLiquidityPool) ? mainToken === utilities.voidEthereumAddress ? mainTokenAmount : secondaryTokenAmount : 0});
+        var result = await farmMainContract.methods.openPosition(stake).send({...actor.from, value: (!stake.amountIsLiquidityPool && setupInfo.involvingETH) ? mainToken === setupInfo.ethereumAddress ? mainTokenAmount : secondaryTokenAmount : 0});
         var { positionId } = result.events.Transfer.returnValues;
         var position = await farmMainContract.methods.position(positionId).call();
 
@@ -156,7 +156,7 @@ describe("Farming", () => {
         var startingPosition = await farmMainContract.methods.position(actor.positionId).call();
 
         var mainTokenAmount = utilities.toDecimals(actor.amount, mainToken != utilities.voidEthereumAddress ? await mainToken.methods.decimals().call() : 18);
-        var setupInfo = await farmMainContract.methods._setupsInfo(startingSetup.infoIndex).call();
+        var {'0': _, '1': setupInfo} = await farmMainContract.methods.setup(actor.setupIndex).call();
         var ammPlugin = new web3.eth.Contract(UniswapV2AMMV1.abi, setupInfo.ammPlugin);
         var liquidityPoolTokenAddress = setupInfo.liquidityPoolTokenAddress;
         var tokens = (await ammPlugin.methods.byLiquidityPool(liquidityPoolTokenAddress).call())[2];
@@ -170,7 +170,7 @@ describe("Farming", () => {
             amountIsLiquidityPool : actor.amountIsLiquidityPool || false,
             positionOwner: utilities.voidEthereumAddress,
         };
-        await farmMainContract.methods.addLiquidity(actor.positionId, stake).send({...actor.from, value: (!stake.amountIsLiquidityPool) ? mainToken === utilities.voidEthereumAddress ? mainTokenAmount : secondaryTokenAmount : 0});
+        await farmMainContract.methods.addLiquidity(actor.positionId, stake).send({...actor.from, value: (!stake.amountIsLiquidityPool && setupInfo.involvingETH) ? mainToken === utilities.voidEthereumAddress ? mainTokenAmount : secondaryTokenAmount : 0});
         var endingSetup = (await farmMainContract.methods.setups().call())[actor.setupIndex];
         var endingPosition = await farmMainContract.methods.position(actor.positionId).call();
         assert.strictEqual(utilities.fromDecimals(parseInt(startingPosition.liquidityPoolTokenAmount) * 2, 4).slice(0, -1), utilities.fromDecimals(parseInt(endingPosition.liquidityPoolTokenAmount), 4).slice(0, -1));
@@ -205,6 +205,8 @@ describe("Farming", () => {
                 } 
                 var position = await farmMainContract.methods.position(actor.positionId).call();
                 actor.position = position;
+            } else {
+                reward = (parseInt(setup.endBlock) - parseInt(actor.position.creationBlock))  * parseInt(actor.position.lockedRewardPerBlock);
             }
             assert.strictEqual(utilities.formatMoney(utilities.fromDecimals(diffBalance, rewardToken !== utilities.voidEthereumAddress ? await rewardToken.methods.decimals().call() : 18), 4), utilities.formatMoney(utilities.fromDecimals(reward, rewardToken !== utilities.voidEthereumAddress ? await rewardToken.methods.decimals().call() : 18), 4))
         }
@@ -254,6 +256,31 @@ describe("Farming", () => {
             console.log(`farm main balance is ${balance}`);
         } catch (error) {
             console.log(error);
+        }
+    }
+
+    async function transferPosition(from, to) {
+        try {
+            const result = await farmMainContract.methods.transferPosition(to.address, from.positionId).send(from.from);
+            var { positionId } = result.events.Transfer.returnValues;
+            assert.notStrictEqual(from.positionId, positionId);
+            const oldPosition = await farmMainContract.methods.position(from.positionId).call();
+            const transferedPosition = await farmMainContract.methods.position(positionId).call();
+            assert.strictEqual(oldPosition.creationBlock, "0");
+            assert.strictEqual(transferedPosition.creationBlock, from.position.creationBlock);
+            assert.strictEqual(transferedPosition.reward, from.position.reward);
+            assert.notStrictEqual(transferedPosition.uniqueOwner, from.position.uniqueOwner);
+            actors[to.name] = {
+                ...actors[to.name],
+                free: from.free,
+                setupIndex: from.setupIndex,
+                position: transferedPosition,
+                positionId,
+                objectId: from.objectId,
+            }
+            console.log(actors);
+        } catch (error) {
+            console.error(error);
         }
     }
 
@@ -309,6 +336,8 @@ describe("Farming", () => {
             await initActor("Porco", accounts[6], false, 50, false);
             await initActor("Ladro", accounts[7], false, 50, false);
             await initActor("Cane", accounts[8], false, 50, false);
+            await initActor("Sporco", accounts[9], false, 50, false);
+            await initActor("Verme", accounts[10], false, 50, false);
         } catch (error) {
             console.error(error);
         }
@@ -336,8 +365,8 @@ describe("Farming", () => {
             farmMainExtension = new web3.eth.Contract(FarmExtension.abi, farmMainExtensionAddress);
             console.log(`simple farm extension deployed at ${farmMainExtension.options.address}`);
 
-            var code = fs.readFileSync(path.resolve(__dirname, '..', 'contracts/farming/dfo/ManageLiquidityMiningFunctionality.sol'), 'UTF-8').format(farmMainExtension.options.address);
-            var proposal = await dfoManager.createProposal(dfo, "manageLiquidityMining", true, code, "manageLiquidityMining(address,uint256,bool,address,address,uint256,bool)", false, true);
+            var code = fs.readFileSync(path.resolve(__dirname, '..', 'contracts/farming/dfo/ManageFarmingFunctionality.sol'), 'UTF-8').format(farmMainExtension.options.address);
+            var proposal = await dfoManager.createProposal(dfo, "manageFarming", true, code, "manageFarming(address,uint256,bool,address,address,uint256,bool)", false, true);
             await dfoManager.finalizeProposal(dfo, proposal);
 
             transaction = await farmFactory.methods.cloneFarmDefaultExtension().send(blockchainConnection.getSendingOptions());
@@ -454,6 +483,12 @@ describe("Farming", () => {
     });
     it("should allow bestiadidio to open a new staking position", async () => {
         await createStakingPosition(actors.Bestiadidio, 1);
+    });
+    it("should allow sporco to open a new staking position", async () => {
+        await createStakingPosition(actors.Sporco, 1);
+    });
+    it("should allow sporco to transfer its position to verme", async () => {
+        await transferPosition(actors.Sporco, actors.Verme);
     });
     it("should allow cappello to open a new staking position", async () => {
         await createStakingPosition(actors.Cappello, 0);
@@ -592,6 +627,30 @@ describe("Farming", () => {
         await withdrawLiquidity(actors.Cavicchioli);
     })
     */
+    it("should not allow sporco withdraw its reward", async () => {
+        try {
+            await withdrawReward(actors.Sporco);
+            assert.notStrictEqual(false, true);
+        } catch (error) {
+            console.error(error);
+            assert.strictEqual(true, true);
+        }
+    });
+    it("should allow verme to withdraw reward", async () => {
+        await withdrawReward(actors.Verme);
+    })
+    it("should allow sporco to withdraw liquidity", async () => {
+        await withdrawLiquidity(actors.Sporco); 
+    })
+    it("should not allow verme to withdraw liquidity", async () => {
+        try {
+            await withdrawLiquidity(actors.Verme);
+            assert.notStrictEqual(false, true);
+        } catch (error) {
+            console.error(error);
+            assert.strictEqual(true, true);
+        }
+    })
     it("should allow bestiadidio to withdraw liquidity", async () => {
         await withdrawLiquidity(actors.Bestiadidio);
     })
@@ -642,8 +701,7 @@ describe("Farming", () => {
         ];
         await clonedFarmExtension.methods.setFarmingSetups(updatedSetups).send(blockchainConnection.getSendingOptions());
         var setups = await farmMainContract.methods.setups().call();
-        var setup = setups[3];
-        var setupInfo = await farmMainContract.methods._setupsInfo(setup.infoIndex).call();
+        var {'0': setup, '1': setupInfo} = await farmMainContract.methods.setup(3).call();
         assert.strictEqual(setupInfo.originalRewardPerBlock, "550000000000000000");
         assert.strictEqual(setup.rewardPerBlock, "550000000000000000");
     });
@@ -680,8 +738,7 @@ describe("Farming", () => {
         ];
         await clonedFarmExtension.methods.setFarmingSetups(updatedSetups).send(blockchainConnection.getSendingOptions());
         var setups = await farmMainContract.methods.setups().call();
-        var setup = setups[4];
-        var setupInfo = await farmMainContract.methods._setupsInfo(setup.infoIndex).call();
+        var {'0': setup, '1': setupInfo} = await farmMainContract.methods.setup(4).call();
         assert.strictEqual(setupInfo.originalRewardPerBlock, "450000000000000000");
         assert.strictEqual(setup.rewardPerBlock, "450000000000000000");
     });

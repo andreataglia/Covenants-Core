@@ -2,43 +2,43 @@
 pragma solidity ^0.7.6;
 pragma abicoder v2;
 
-import "../farming/ILiquidityMiningExtension.sol";
-import "../farming/ILiquidityMining.sol";
-import "../farming/LiquidityMiningData.sol";
+import "../farming/IFarmExtension.sol";
+import "../farming/IFarmMain.sol";
 import "../farming/util/DFOHub.sol";
 import "./IWUSDExtensionController.sol";
 import "./util/IERC20.sol";
 import "./util/INativeV1.sol";
 
-contract WUSDLiquidityMiningExtension is ILiquidityMiningExtension {
+contract WUSDFarmingExtension is IFarmExtension {
 
-    string private constant FUNCTIONALITY_NAME = "manageLiquidityMining";
+    string private constant FUNCTIONALITY_NAME = "manageFarming";
 
-    uint256 public constant ONE_HUNDRED = 10000;
+    uint256 public constant ONE_HUNDRED = 1e18;
 
     // wallet who has control on the extension
     address internal _doubleProxy;
 
-    // mapping that contains all the liquidity mining contract linked to this extension
-    address internal _liquidityMiningContract;
+    // mapping that contains all the farming contract linked to this extension
+    address internal _farmingContract;
 
-    // the reward token address linked to this liquidity mining contract
+    // the reward token address linked to this farming contract
     address internal _rewardTokenAddress;
-
-    // whether the token is by mint or by reserve
-    bool internal _byMint;
 
     address public wusdExtensionControllerAddress;
 
-    uint256[] public rebalancePercentages;
+    uint256 public rewardCreditPercentage;
 
-    uint256 public rebalanceByCreditBlockIntervalMultiplier;
+    FarmingSetupInfo[] private infoModels;
+    uint256[] private rebalancePercentages;
+
+    uint256 public lastCheck;
+    uint256 public lastBalance;
 
     /** MODIFIERS */
 
-    /** @dev liquidityMiningOnly modifier used to check for unauthorized transfers. */
-    modifier liquidityMiningOnly() {
-        require(msg.sender == _liquidityMiningContract, "Unauthorized");
+    /** @dev farmingOnly modifier used to check for unauthorized transfers. */
+    modifier farmingOnly() {
+        require(msg.sender == _farmingContract, "Unauthorized");
         _;
     }
 
@@ -50,19 +50,34 @@ contract WUSDLiquidityMiningExtension is ILiquidityMiningExtension {
 
     /** PUBLIC METHODS */
 
-    function init(bool, address) public virtual override {
+    function init(bool, address, address) public virtual override {
         revert("Method not allowed, use specific one instead");
     }
 
-    function init(bool byMint, address host, address _wusdExtensionControllerAddress, uint256[] memory _rebalancePercentages, uint256 _rebalanceByCreditBlockIntervalMultiplier) public virtual {
-        require(_liquidityMiningContract == address(0), "Already init");
+    function init(address host, address _wusdExtensionControllerAddress, FarmingSetupInfo[] memory farmingSetups, uint256[] memory _rebalancePercentages, uint256 _rewardCreditPercentage) public virtual {
+        require(_farmingContract == address(0), "Already init");
         require(host != address(0), "blank host");
-        _rewardTokenAddress = ILiquidityMining(_liquidityMiningContract = msg.sender)._rewardTokenAddress();
-        _byMint = byMint;
+        _rewardTokenAddress = IFarmMain(_farmingContract = msg.sender)._rewardTokenAddress();
         _doubleProxy = host;
         wusdExtensionControllerAddress = _wusdExtensionControllerAddress;
-        require(ILiquidityMining(_liquidityMiningContract).setups().length == (rebalancePercentages = _rebalancePercentages).length, "Invalid length");
-        rebalanceByCreditBlockIntervalMultiplier = _rebalanceByCreditBlockIntervalMultiplier;
+        _setModels(farmingSetups, _rebalancePercentages);
+        rewardCreditPercentage = _rewardCreditPercentage;
+    }
+
+    function _setModels(FarmingSetupInfo[] memory farmingSetups, uint256[] memory _rebalancePercentages) private {
+        require(farmingSetups.length > 0 && (farmingSetups.length - 1) == _rebalancePercentages.length, "Invalid data");
+        delete rebalancePercentages;
+        delete infoModels;
+        uint256 percentage = 0;
+        for(uint256 i = 0; i < _rebalancePercentages.length; i++) {
+            farmingSetups[i].renewTimes = 0;
+            infoModels.push(farmingSetups[i]);
+            percentage += _rebalancePercentages[i];
+            rebalancePercentages.push(_rebalancePercentages[i]);
+        }
+        farmingSetups[farmingSetups.length - 1].renewTimes = 0;
+        infoModels.push(farmingSetups[farmingSetups.length - 1]);
+        require(percentage < ONE_HUNDRED, "More than one hundred");
     }
 
     /** @dev allows the DFO to update the double proxy address.
@@ -72,59 +87,103 @@ contract WUSDLiquidityMiningExtension is ILiquidityMiningExtension {
         _doubleProxy = newDoubleProxy;
     }
 
-    function data() view public virtual override returns(address liquidityMiningContract, bool byMint, address host, address rewardTokenAddress) {
-        return (_liquidityMiningContract, _byMint, _doubleProxy, _rewardTokenAddress);
+    /** @dev method used to update the extension treasury.
+     */
+    function setTreasury(address) public virtual override hostOnly {
+        revert("Impossibru!");
     }
 
-    /** @dev transfers the input amount to the caller liquidity mining contract.
+    function setRewardCreditPercentage(uint256 _rewardCreditPercentage) public hostOnly {
+        rewardCreditPercentage = _rewardCreditPercentage;
+    }
+
+    function data() view public virtual override returns(address farmingContract, bool byMint, address host, address treasury, address rewardTokenAddress) {
+        return (_farmingContract, false, _doubleProxy, _getDFOWallet(), _rewardTokenAddress);
+    }
+
+    function models() public view returns(FarmingSetupInfo[] memory, uint256[] memory) {
+        return (infoModels, rebalancePercentages);
+    }
+
+    /** @dev transfers the input amount to the caller farming contract.
       * @param amount amount of erc20 to transfer or mint.
      */
-    function transferTo(uint256 amount, address recipient) override public liquidityMiningOnly {
-        IMVDProxy(IDoubleProxy(_doubleProxy).proxy()).submit(FUNCTIONALITY_NAME, abi.encode(address(0), 0, true, _rewardTokenAddress, recipient, amount, _byMint));
+    function transferTo(uint256 amount) public virtual override farmingOnly {
+        lastBalance -= amount;
+        if(_rewardTokenAddress != address(0)) {
+            return _safeTransfer(_rewardTokenAddress, _farmingContract, amount);
+        }
+        (bool result, ) = _farmingContract.call{value:amount}("");
+        require(result, "ETH transfer failed.");
     }
 
-    /** @dev transfers the input amount from the caller liquidity mining contract to the extension.
+    /** @dev transfers the input amount from the caller farming contract to the extension.
       * @param amount amount of erc20 to transfer back or burn.
      */
-    function backToYou(uint256 amount) override payable public liquidityMiningOnly {
+    function backToYou(uint256 amount) payable public virtual override farmingOnly {
+        lastBalance += amount;
         if(_rewardTokenAddress != address(0)) {
-            _safeTransferFrom(_rewardTokenAddress, msg.sender, address(this), amount);
-            _safeApprove(_rewardTokenAddress, _getFunctionalityAddress(), amount);
-            IMVDProxy(IDoubleProxy(_doubleProxy).proxy()).submit(FUNCTIONALITY_NAME, abi.encode(address(0), 0, false, _rewardTokenAddress, msg.sender, amount, _byMint));
-        } else {
-            IMVDProxy(IDoubleProxy(_doubleProxy).proxy()).submit{value : amount}(FUNCTIONALITY_NAME, abi.encode(address(0), 0, false, _rewardTokenAddress, msg.sender, amount, _byMint));
+            return _safeTransferFrom(_rewardTokenAddress, msg.sender, address(this), amount);
+        }
+        require(msg.value == amount, "invalid sent amount");
+    }
+
+    function flushTo(address[] memory tokenAddresses, uint256[] memory amounts, address receiver) public hostOnly {
+        for(uint256 i = 0; i < tokenAddresses.length; i++) {
+            if(tokenAddresses[i] == address(0)) {
+                (bool result, ) = receiver.call{value:amounts[i]}("");
+                require(result, "ETH transfer failed.");
+            } else {
+                _safeTransfer(tokenAddresses[i], receiver, amounts[i]);
+            }
         }
     }
 
     /** @dev this function calls the liquidity mining contract with the given address and sets the given liquidity mining setups.*/
-    function setLiquidityMiningSetups(LiquidityMiningSetupConfiguration[] memory, bool, bool, uint256) public override hostOnly {
-        revert("Method not allowed, use specific one instead");
+    function setFarmingSetups(FarmingSetupConfiguration[] memory farmingSetups) public override hostOnly {
+        IFarmMain(_farmingContract).setFarmingSetups(farmingSetups);
     }
 
     function setWusdExtensionControllerAddress(address _wusdExtensionControllerAddress) public hostOnly {
         wusdExtensionControllerAddress = _wusdExtensionControllerAddress;
     }
 
-    function setLiquidityMiningSetups(LiquidityMiningSetupConfiguration[] memory liquidityMiningSetups, bool clearPinned, bool setPinned, uint256 pinnedIndex, uint256[] memory _rebalancePercentages) public hostOnly {
-        ILiquidityMining(_liquidityMiningContract).setLiquidityMiningSetups(liquidityMiningSetups, clearPinned, setPinned, pinnedIndex);
-        require(ILiquidityMining(_liquidityMiningContract).setups().length == (rebalancePercentages = _rebalancePercentages).length, "Invalid length");
+    function setModels(FarmingSetupInfo[] memory farmingSetups, uint256[] memory _rebalancePercentages) public hostOnly {
+        _setModels(farmingSetups, _rebalancePercentages);
     }
 
     function rebalanceRewardsPerBlock() public {
-        (address collection, uint256 objectId,) = IWUSDExtensionController(wusdExtensionControllerAddress).wusdInfo();
-        uint256 totalBalance = INativeV1(collection).balanceOf(address(this), objectId);
-        uint256 periodLength = _calculatePercentage(IWUSDExtensionController(wusdExtensionControllerAddress).rebalanceByCreditBlockInterval(), rebalanceByCreditBlockIntervalMultiplier);
-        LiquidityMiningSetup[] memory setups = ILiquidityMining(_liquidityMiningContract).setups();
-        LiquidityMiningSetupConfiguration[] memory liquidityMiningSetups = new LiquidityMiningSetupConfiguration[](setups.length);
-        for(uint256 i = 0; i < liquidityMiningSetups.length; i++) {
-            setups[i].rewardPerBlock = (_calculatePercentage(totalBalance, rebalancePercentages[i]) / periodLength);
-            liquidityMiningSetups[i] = LiquidityMiningSetupConfiguration(
+        uint256 lastRebalanceByCreditBlock = IWUSDExtensionController(wusdExtensionControllerAddress).lastRebalanceByCreditBlock();
+        require(lastRebalanceByCreditBlock > 0 && lastRebalanceByCreditBlock != lastCheck, "Invalid block");
+        lastCheck = lastRebalanceByCreditBlock;
+        uint256 amount = _calculatePercentage(IERC20(_rewardTokenAddress).balanceOf(_getDFOWallet()), rewardCreditPercentage);
+        IMVDProxy(IDoubleProxy(_doubleProxy).proxy()).submit(FUNCTIONALITY_NAME, abi.encode(address(0), 0, true, _rewardTokenAddress, address(this), amount, false));
+        uint256 totalBalance = IERC20(_rewardTokenAddress).balanceOf(address(this));
+        uint256 balance = totalBalance - lastBalance;
+        lastBalance = totalBalance;
+        uint256 remainingBalance = balance;
+        uint256 currentReward = 0;
+        FarmingSetupConfiguration[] memory farmingSetups = new FarmingSetupConfiguration[](infoModels.length);
+        uint256 i;
+        for(i = 0; i < rebalancePercentages.length; i++) {
+            infoModels[i].originalRewardPerBlock = (currentReward = _calculatePercentage(balance, rebalancePercentages[i])) / infoModels[i].blockDuration;
+            remainingBalance -= currentReward;
+            farmingSetups[i] = FarmingSetupConfiguration(
+                true,
                 false,
-                i,
-                setups[i]
+                0,
+                infoModels[i]
             );
         }
-        ILiquidityMining(_liquidityMiningContract).setLiquidityMiningSetups(liquidityMiningSetups, false, false, 0);
+        i = rebalancePercentages.length;
+        infoModels[i].originalRewardPerBlock = remainingBalance / infoModels[i].blockDuration;
+        farmingSetups[i] = FarmingSetupConfiguration(
+            true,
+            false,
+            0,
+            infoModels[i]
+        );
+        IFarmMain(_farmingContract).setFarmingSetups(farmingSetups);
     }
 
     /** PRIVATE METHODS */
@@ -163,6 +222,16 @@ contract WUSDLiquidityMiningExtension is ILiquidityMiningExtension {
     function _safeApprove(address erc20TokenAddress, address to, uint256 value) internal virtual {
         bytes memory returnData = _call(erc20TokenAddress, abi.encodeWithSelector(IERC20(erc20TokenAddress).approve.selector, to, value));
         require(returnData.length == 0 || abi.decode(returnData, (bool)), 'APPROVE_FAILED');
+    }
+
+    /** @dev function used to safe transfer ERC20 tokens.
+      * @param erc20TokenAddress address of the token to transfer.
+      * @param to receiver of the tokens.
+      * @param value amount of tokens to transfer.
+     */
+    function _safeTransfer(address erc20TokenAddress, address to, uint256 value) internal virtual {
+        bytes memory returnData = _call(erc20TokenAddress, abi.encodeWithSelector(IERC20(erc20TokenAddress).transfer.selector, to, value));
+        require(returnData.length == 0 || abi.decode(returnData, (bool)), 'TRANSFER_FAILED');
     }
 
     /** @dev this function safely transfers the given ERC20 value from an address to another.
