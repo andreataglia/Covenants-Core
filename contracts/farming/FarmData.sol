@@ -1,5 +1,5 @@
 //SPDX-License-Identifier: MIT
-pragma solidity ^0.7.6;
+pragma solidity ^0.8.1;
 
 struct FarmingPositionRequest {
     uint256 setupIndex; // index of the chosen setup.
@@ -16,18 +16,16 @@ struct FarmingSetupConfiguration {
 }
 
 struct FarmingSetupInfo {
-    bool free; // if the setup is a free farming setup or a locked one.
     uint256 blockDuration; // duration of setup
+    uint256 startBlock; // optional start block used for the delayed activation of the first setup
     uint256 originalRewardPerBlock;
     uint256 minStakeable; // minimum amount of staking tokens.
-    uint256 maxStakeable; // maximum amount stakeable in the setup (used only if free is false).
     uint256 renewTimes; // if the setup is renewable or if it's one time.
     address ammPlugin; // amm plugin address used for this setup (eg. uniswap amm plugin address).
     address liquidityPoolTokenAddress; // address of the liquidity pool token
     address mainTokenAddress; // eg. buidl address.
-    address ethereumAddress;
+    address ethereumAddress; // amm ethereum address.
     bool involvingETH; // if the setup involves ETH or not.
-    uint256 penaltyFee; // fee paid when the user exits a still active locked farming setup (used only if free is false).
     uint256 setupsCount; // number of setups created by this info.
     uint256 lastSetupIndex; // index of last setup;
 }
@@ -38,7 +36,6 @@ struct FarmingSetup {
     uint256 startBlock; // farming setup start block.
     uint256 endBlock; // farming setup end block.
     uint256 lastUpdateBlock; // number of the block where an update was triggered.
-    uint256 objectId; // items object id for the liquidity pool token (used only if free is false).
     uint256 rewardPerBlock; // farming setup reward per single block.
     uint256 totalSupply; // If free it's the LP amount, if locked is currentlyStaked.
 }
@@ -49,6 +46,5 @@ struct FarmingPosition {
     uint256 creationBlock; // block when this position was created.
     uint256 liquidityPoolTokenAmount; // amount of liquidity pool token in the position.
     uint256 mainTokenAmount; // amount of main token in the position (used only if free is false).
-    uint256 reward; // position reward (used only if free is false).
-    uint256 lockedRewardPerBlock; // position locked reward per block (used only if free is false).
+    uint256 reward; // position reward.
 }

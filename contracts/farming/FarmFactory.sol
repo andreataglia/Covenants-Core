@@ -14,10 +14,6 @@ contract FarmFactory is IFarmFactory {
     address public _doubleProxy;
     // linked DFO exit fee
     uint256 private _feePercentage;
-    // collection uri
-    string public farmTokenCollectionURI;
-    // farm token uri
-    string public farmTokenURI;
 
     // event that tracks farm main contracts deployed
     event FarmMainDeployed(address indexed farmMainAddress, address indexed sender, bytes initResultData);
@@ -28,10 +24,8 @@ contract FarmFactory is IFarmFactory {
     // event that tracks wallet changes
     event FeePercentageSet(uint256 newFeePercentage);
 
-    constructor(address doubleProxy, address _farmMainImplAddress, address _farmDefaultExtension, uint256 feePercentage, string memory farmTokenCollectionUri, string memory farmTokenUri) {
+    constructor(address doubleProxy, address _farmMainImplAddress, address _farmDefaultExtension, uint256 feePercentage) {
         _doubleProxy = doubleProxy;
-        farmTokenCollectionURI = farmTokenCollectionUri;
-        farmTokenURI = farmTokenUri;
         emit FarmMainLogicSet(farmMainImplAddress = _farmMainImplAddress);
         emit FarmDefaultExtensionSet(farmDefaultExtension = _farmDefaultExtension);
         emit FeePercentageSet(_feePercentage = feePercentage);
@@ -69,34 +63,6 @@ contract FarmFactory is IFarmFactory {
      */
     function updateDefaultExtensionAddress(address _farmDefaultExtensionAddress) public onlyDFO {
         emit FarmDefaultExtensionSet(farmDefaultExtension = _farmDefaultExtensionAddress);
-    }
-
-    /** @dev allows the factory owner to update the farm token collection uri.
-     * @param farmTokenCollectionUri new farm token collection uri.
-     */
-    function updateFarmTokenCollectionURI(string memory farmTokenCollectionUri) public onlyDFO {
-        farmTokenCollectionURI = farmTokenCollectionUri;
-    }
-
-    /** @dev allows the factory owner to update the farm token uri.
-     * @param farmTokenUri new farm token collection uri.
-     */
-    function updateFarmTokenURI(string memory farmTokenUri) public onlyDFO {
-        farmTokenURI = farmTokenUri;
-    }
-
-    /** @dev returns the farm token collection uri.
-      * @return farm token collection uri.
-     */
-    function getFarmTokenCollectionURI() public override view returns (string memory) {
-        return farmTokenCollectionURI;
-    }
-
-    /** @dev returns the farm token uri.
-      * @return farm token uri.
-     */
-    function getFarmTokenURI() public override view returns (string memory) {
-        return farmTokenURI;
     }
 
     /** @dev utlity method to clone default extension
