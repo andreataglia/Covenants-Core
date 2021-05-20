@@ -32,12 +32,14 @@ async function main() {
         }
     }
 
-    require("ganache-core").server(options).listen(process.env.port || 8545, async function(error, blockchain) {
+    const port = process.env.port || 8545;
+    require("ganache-core").server(options).listen(port, async function(error, blockchain) {
         if(error) {
             return console.error(e);
         }
         global.accounts = await (global.web3 = new Web3(blockchain._provider)).eth.getAccounts();
         process.argv[2] && require('../server-verts/' + process.argv[2]);
+        console.log('ganache server listening on port ' + port);
     });
 }
 

@@ -51,20 +51,20 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
 
     /** @dev byExtension modifier used to check for unauthorized changes. */
     modifier byExtension() {
-        require(msg.sender == _extension, "Unauthorized");
+        require(msg.sender == _extension, "Farming Reverts: Unauthorized");
         _;
     }
 
     /** @dev byPositionOwner modifier used to check for unauthorized accesses. */
     modifier byPositionOwner(uint256 positionId) {
-        require(_positions[positionId].uniqueOwner == msg.sender && _positions[positionId].creationBlock != 0, "Not owned");
+        require(_positions[positionId].uniqueOwner == msg.sender && _positions[positionId].creationBlock != 0, "Farming Reverts: Not owned");
         _;
     }
 
     /** @dev activeSetupOnly modifier used to check for function calls only if the setup is active. */
     modifier activeSetupOnly(uint256 setupIndex) {
-        require(_setups[setupIndex].active, "Setup not active");
-        require(_setups[setupIndex].startBlock <= block.number && _setups[setupIndex].endBlock > block.number, "Invalid setup");
+        require(_setups[setupIndex].active, "Farming Reverts: Setup not active");
+        require(_setups[setupIndex].startBlock <= block.number && _setups[setupIndex].endBlock > block.number, "Farming Reverts: Invalid setup");
         _;
     }
 
@@ -80,8 +80,8 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
       * @return extensionReturnCall result of the extension initialization function, if it was called.  
      */
     function init(address extension, bytes memory extensionInitData, address orchestrator, address rewardTokenAddress, bytes memory farmingSetupInfosBytes) public returns(bytes memory extensionReturnCall) {
-        require(_factory == address(0), "Already initialized");
-        require((_extension = extension) != address(0), "extension");
+        require(_factory == address(0), "Farming Reverts: Already initialized");
+        require((_extension = extension) != address(0), "Farming Reverts: extension");
         _factory = msg.sender;
         emit RewardToken(_rewardTokenAddress = rewardTokenAddress);
         if (keccak256(extensionInitData) != keccak256("")) {
@@ -124,7 +124,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
     }
 
     function activateSetup(uint256 setupInfoIndex) public {
-        require(_setupsInfo[setupInfoIndex].renewTimes > 0 && !_setups[_setupsInfo[setupInfoIndex].lastSetupIndex].active, "Invalid toggle.");
+        require(_setupsInfo[setupInfoIndex].renewTimes > 0 && !_setups[_setupsInfo[setupInfoIndex].lastSetupIndex].active, "Farming Reverts: Invalid toggle");
         _toggleSetup(_setupsInfo[setupInfoIndex].lastSetupIndex);
     }
 
@@ -134,11 +134,11 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
         require(
             to != address(0) &&
             pos.creationBlock != 0,
-            "Invalid position"
+            "Farming Reverts: Invalid position"
         );
         // pos.uniqueOwner = to;
         uint256 newPositionId = uint256(keccak256(abi.encode(to, pos.setupIndex)));
-        require(_positions[newPositionId].creationBlock == 0, "Invalid transfer");
+        require(_positions[newPositionId].creationBlock == 0, "Farming Reverts: Invalid transfer");
         _positions[newPositionId] = abi.decode(abi.encode(pos), (FarmingPosition));
         _positions[newPositionId].uniqueOwner = to;
         delete _positions[positionId];
@@ -152,7 +152,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
         address uniqueOwner = (request.positionOwner != address(0)) ? request.positionOwner : msg.sender;
         // create the position id
         positionId = uint256(keccak256(abi.encode(uniqueOwner, request.setupIndex)));
-        require(_positions[positionId].creationBlock == 0, "Invalid open");
+        require(_positions[positionId].creationBlock == 0, "Farming Reverts: Invalid open");
         // create the lp data for the amm
         (LiquidityPoolData memory liquidityPoolData, uint256 mainTokenAmount) = _addLiquidity(request.setupIndex, request);
         _updateSetup(request.setupIndex, liquidityPoolData.amount, positionId, false);
@@ -205,7 +205,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
                 _safeTransfer(_rewardTokenAddress, farmingPosition.uniqueOwner, reward);
             } else {
                 (bool result,) = farmingPosition.uniqueOwner.call{value:reward}("");
-                require(result, "Invalid ETH transfer.");
+                require(result, "Farming Reverts: Invalid ETH transfer");
             }
             _rewardPaid[farmingPosition.setupIndex] += reward;
         }
@@ -224,7 +224,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
         require(
             farmingPosition.creationBlock != 0 &&
             removedLiquidity <= farmingPosition.liquidityPoolTokenAmount &&
-            farmingPosition.uniqueOwner == msg.sender, "Invalid withdraw");
+            farmingPosition.uniqueOwner == msg.sender, "Farming Reverts: Invalid withdraw");
         withdrawReward(positionId);
         _setups[farmingPosition.setupIndex].totalSupply -= removedLiquidity;
         _removeLiquidity(positionId, setupIndex, unwrapPair, removedLiquidity, false);
@@ -263,6 +263,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
 
     function _setOrAddFarmingSetupInfo(FarmingSetupInfo memory info, bool add, bool disable, uint256 setupIndex) private {
         FarmingSetupInfo memory farmingSetupInfo = info;
+        require(farmingSetupInfo.generation == 1 || farmingSetupInfo.generation == 2, "Farming Reverts: Setup generation unsupported");
 
         if(add || !disable) {
             farmingSetupInfo.renewTimes = farmingSetupInfo.renewTimes + 1;
@@ -276,7 +277,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
                 farmingSetupInfo.ammPlugin != address(0) &&
                 farmingSetupInfo.liquidityPoolTokenAddress != address(0) &&
                 farmingSetupInfo.originalRewardPerBlock > 0 &&
-                "Invalid setup configuration"
+                "Farming Reverts: Invalid setup configuration"
             );
 
             (,,address[] memory tokenAddresses) = IAMM(farmingSetupInfo.ammPlugin).byLiquidityPool(farmingSetupInfo.liquidityPoolTokenAddress);
@@ -299,7 +300,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
                     }
                 }
             }
-            require(mainTokenFound, "No main token");
+            require(mainTokenFound, "Farming Reverts: No main token");
             require(!farmingSetupInfo.involvingETH || ethTokenFound, "No ETH token");
             farmingSetupInfo.setupsCount = 0;
             _setupsInfo[_farmingSetupsInfoCount] = farmingSetupInfo;
@@ -314,7 +315,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
         farmingSetupInfo = _setupsInfo[_setups[setupIndex].infoIndex];
 
         if(disable) {
-            require(setup.active, "Not possible");
+            require(setup.active, "Farming Reverts: Not possible");
             _toggleSetup(setupIndex);
             return;
         }
@@ -344,7 +345,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
     }
 
     function _transferToMeAndCheckAllowance(FarmingSetup memory setup, FarmingPositionRequest memory request) private returns(IAMM amm, uint256 liquidityPoolAmount, uint256 mainTokenAmount) {
-        require(request.amount > 0, "No amount");
+        require(request.amount > 0, "Farming Reverts: No amount");
         // retrieve the values
         amm = IAMM(_setupsInfo[setup.infoIndex].ammPlugin);
         liquidityPoolAmount = request.amountIsLiquidityPool ? request.amount : 0;
@@ -395,7 +396,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
         tokenAmount = mainTokenAmount;
         // amount is lp check
         if (liquidityPoolData.amountIsLiquidityPool || !_setupsInfo[_setups[setupIndex].infoIndex].involvingETH) {
-            require(msg.value == 0, "ETH not involved");
+            require(msg.value == 0, "Farming Reverts: ETH not involved");
         }
         if (liquidityPoolData.amountIsLiquidityPool) {
             return(liquidityPoolData, tokenAmount);
@@ -495,7 +496,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
         FarmingSetup storage setup = _setups[setupIndex];
         // require(!setup.active || block.number >= setup.endBlock, "Not valid activation");
 
-        require(block.number > _setupsInfo[setup.infoIndex].startBlock, "Too early for this setup");
+        require(block.number > _setupsInfo[setup.infoIndex].startBlock, "Farming Reverts: Too early for this setup");
 
         if (setup.active && block.number >= setup.endBlock && _setupsInfo[setup.infoIndex].renewTimes == 0) {
             setup.active = false;
@@ -547,7 +548,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
      */
     function _safeApprove(address erc20TokenAddress, address to, uint256 value) internal virtual {
         bytes memory returnData = _call(erc20TokenAddress, abi.encodeWithSelector(IERC20(erc20TokenAddress).approve.selector, to, value));
-        require(returnData.length == 0 || abi.decode(returnData, (bool)), 'APPROVE_FAILED');
+        require(returnData.length == 0 || abi.decode(returnData, (bool)), 'Farming Reverts: APPROVE_FAILED');
     }
 
     /** @dev function used to safe transfer ERC20 tokens.
@@ -557,7 +558,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
      */
     function _safeTransfer(address erc20TokenAddress, address to, uint256 value) internal virtual {
         bytes memory returnData = _call(erc20TokenAddress, abi.encodeWithSelector(IERC20(erc20TokenAddress).transfer.selector, to, value));
-        require(returnData.length == 0 || abi.decode(returnData, (bool)), 'TRANSFER_FAILED');
+        require(returnData.length == 0 || abi.decode(returnData, (bool)), 'Farming Reverts: TRANSFER_FAILED');
     }
 
     /** @dev this function safely transfers the given ERC20 value from an address to another.
@@ -568,7 +569,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
      */
     function _safeTransferFrom(address erc20TokenAddress, address from, address to, uint256 value) private {
         bytes memory returnData = _call(erc20TokenAddress, abi.encodeWithSelector(IERC20(erc20TokenAddress).transferFrom.selector, from, to, value));
-        require(returnData.length == 0 || abi.decode(returnData, (bool)), 'TRANSFERFROM_FAILED');
+        require(returnData.length == 0 || abi.decode(returnData, (bool)), 'Farming Reverts: TRANSFERFROM_FAILED');
     }
 
     /** @dev calls the contract at the given location using the given payload and returns the returnData.

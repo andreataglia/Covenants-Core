@@ -28,6 +28,8 @@ struct FarmingSetupInfo {
     bool involvingETH; // if the setup involves ETH or not.
     uint256 setupsCount; // number of setups created by this info.
     uint256 lastSetupIndex; // index of last setup;
+    uint8 generation; // setup generation. Currently available on gen 1 and 2.
+    // TODO: extra info needed by the NFT
 }
 
 struct FarmingSetup {
