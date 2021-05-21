@@ -273,6 +273,9 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
         }
 
         if (add) {
+            // TODO: require setup params for gen 2
+
+            // check validity of the SetupInfo
             require(
                 farmingSetupInfo.ammPlugin != address(0) &&
                 farmingSetupInfo.liquidityPoolTokenAddress != address(0) &&
@@ -302,7 +305,7 @@ contract FarmMain is IFarmMain, ERC1155Receiver {
             }
             require(mainTokenFound, "Farming Reverts: No main token");
             require(!farmingSetupInfo.involvingETH || ethTokenFound, "No ETH token");
-            farmingSetupInfo.setupsCount = 0;
+
             _setupsInfo[_farmingSetupsInfoCount] = farmingSetupInfo;
             _setups[_farmingSetupsCount] = FarmingSetup(_farmingSetupsInfoCount, false, 0, 0, 0, 0, farmingSetupInfo.originalRewardPerBlock, 0);
             _setupsInfo[_farmingSetupsInfoCount].lastSetupIndex = _farmingSetupsCount;
